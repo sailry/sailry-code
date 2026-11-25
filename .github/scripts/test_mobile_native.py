@@ -57,6 +57,12 @@ raise SystemExit(int(os.environ.get("FIXTURE_STATUS", "0")))
         config = (ROOT / "apps/mobile/ios/Flutter/Sailry.xcconfig").read_text()
         for key, value in re.findall(r"(?m)^(SAILRY_[A-Z_]+) = *(.*)$", config):
             environment[key] = re.sub(r"\$\(([^)]+)\)", lambda match: environment[match[1]], value)
+        project = (ROOT / 'apps/mobile/ios/Runner.xcodeproj/project.pbxproj').read_text()
+        phase = re.search(r'/\* Build Sailry Native \*/ = \{(.*?)\n\s*\};', project, re.S)[1]
+        inputs = re.search(r'inputPaths = \((.*?)\);', phase, re.S)[1]
+        for item in re.findall(r'"([^"]+)"', inputs):
+            expanded = re.sub(r'\$\(([^)]+)\)', lambda m: environment.get(m[1], ''), item)
+            self.assertTrue(Path(expanded).is_file(), f'missing native build phase input: {item}')
         result = subprocess.run(["sh", str(self.mobile / "ios/build_native.sh")], cwd=self.root,
                                 env=environment, capture_output=True, text=True)
         return result, json.loads(output.read_text()) if output.exists() else None

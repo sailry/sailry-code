@@ -298,7 +298,6 @@
 			inputPaths = (
 				"$(SRCROOT)/build_native.sh",
 				"$(SRCROOT)/../tool/build_native.sh",
-				"$(SAILRY_HARNESS_ROOT)/cmd/sailry-mobile/build.sh",
 			);
 			name = "Build Sailry Native";
 			outputPaths = (
