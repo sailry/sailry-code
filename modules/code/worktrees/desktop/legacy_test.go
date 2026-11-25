@@ -114,6 +114,19 @@ func TestWorktreeControlsCoexistWithPackages(t *testing.T) {
 					return w.Tester.HasText("Third-party manager invoked")
 				})
 			}
+			w.Await("the external checkout was not projected in the project", func() bool {
+				for _, current := range w.App.Data.Projects {
+					if current.ID != project.ID.String() {
+						continue
+					}
+					for _, checkout := range current.Worktrees {
+						if checkout.Path == linked && checkout.Branch == "linked-fixture" {
+							return true
+						}
+					}
+				}
+				return false
+			})
 			w.Await("the native manager submenu did not reopen", func() bool {
 				if slices.Contains(w.ProjectMenu(project.Name), support.Label("worktree_manage")) {
 					return true
@@ -129,9 +142,22 @@ func TestWorktreeControlsCoexistWithPackages(t *testing.T) {
 			})
 			w.Tester.Key(0, ui.KeyEscape)
 			w.OpenSession(session.ID.String())
-			w.Await("the session location was not restored", func() bool { return w.App.Sidebar.Selected == session.ID.String() })
-			clickControl(t, w, ui.RoleMenuButton, "main")
-			clickMenuChoice(t, w, support.Label("location_create"))
+			w.Await("the session location was not restored after closing the manager", func() bool {
+				return w.App.Page == native.ConversationPage && w.App.Sidebar.Selected == session.ID.String() &&
+					w.App.FocusedConversation() == session.ID.String() && !w.Tester.HasText(support.Label("workspace_worktrees"))
+			})
+			create := support.Label("location_create")
+			w.Await("the restored worktree menu did not open", func() bool {
+				if item, ok := w.Tester.AccessByRole(ui.RoleMenuItem, create); ok && !item.Offscreen {
+					return true
+				}
+				if trigger, ok := w.Tester.AccessByRole(ui.RoleMenuButton, "main"); ok && !trigger.Disabled && !trigger.Offscreen &&
+					!trigger.Expanded && trigger.Bounds.W > 0 && trigger.Bounds.H > 0 {
+					w.Click(trigger)
+				}
+				return false
+			})
+			clickMenuChoice(t, w, create)
 			w.Await("the native create form did not open", func() bool {
 				return controlCount(w, ui.RoleTextField, support.Label("git_new_branch")) == 1
 			})

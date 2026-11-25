@@ -155,7 +155,9 @@ func TestForkFromBranchRequiresBothModules(t *testing.T) {
 			w.Await("the saved history was not projected in the fork", func() bool { return w.Tester.HasText("History fixture answer") })
 			original := readForkHistory(t, w, source.ID)
 			copied := readForkHistory(t, w, forked.ID)
-			if len(original.Page.Runs) != 1 || len(copied.Page.Runs) != 1 || copied.Page.Runs[0].Status != protocol.ConversationStatusCompleted ||
+			if len(original.Page.Runs) != 1 || len(copied.Page.Runs) != 1 || original.Page.Runs[0].Status != protocol.ConversationStatusCompleted ||
+				copied.Page.Runs[0].Status != protocol.ConversationStatusCompleted || copied.Page.Runs[0].Turn != original.Page.Runs[0].Turn ||
+				forked.Fork.Through != original.Page.Runs[0].Turn ||
 				len(copied.Page.Queue.Items) != 0 || calls.Load() != 1 {
 				t.Fatalf("fork did not copy history without replay: original=%+v fork=%+v model requests=%d", original.Page.Runs, copied.Page.Runs, calls.Load())
 			}
@@ -165,13 +167,19 @@ func TestForkFromBranchRequiresBothModules(t *testing.T) {
 
 func completedForkSource(t *testing.T, w *support.Window, project protocol.ProjectID, calls *atomic.Int32) protocol.Session {
 	t.Helper()
+	const key = "fixture-key"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
 		if request.Method != http.MethodPost || request.URL.Path != "/v1/chat/completions" {
 			t.Errorf("unexpected model request: %s %s", request.Method, request.URL.Path)
 			writer.WriteHeader(http.StatusNotFound)
 			return
 		}
-		calls.Add(1)
+		if request.Header.Get("Authorization") != "Bearer "+key {
+			t.Error("the turn did not use the source Node's fixture credential")
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		writer.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(writer, `data: {"id":"fixture","object":"chat.completion.chunk","model":"fixture","created":1,"choices":[{"index":0,"delta":{"role":"assistant","content":"History fixture answer"},"finish_reason":null}]}`+"\n\n")
 		fmt.Fprint(writer, `data: {"id":"fixture","object":"chat.completion.chunk","model":"fixture","created":1,"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`+"\n\ndata: [DONE]\n\n")
@@ -183,25 +191,49 @@ func completedForkSource(t *testing.T, w *support.Window, project protocol.Proje
 	model := protocol.DefaultConversationModel()
 	model.ID, model.Context, model.Output = "fixture", 32000, 8000
 	provider.DefaultModel, provider.Models = model.ID, []protocol.ConversationModel{model}
-	secret := protocol.NewSecret("fixture-key")
-	w.Do(protocol.Command{Kind: "save_provider", Data: protocol.CommandSaveProviderPayload{Provider: provider, Secret: &secret}})
+	secret := protocol.NewSecret(key)
+	saved := support.Result[protocol.ConversationProvider](t, w.Do(protocol.Command{Kind: "save_provider", Data: protocol.CommandSaveProviderPayload{Provider: provider, Secret: &secret}}))
+	if saved.Credential == nil || saved.Credential.Node != w.Owner.ID() {
+		t.Fatal("provider receipt did not bind a credential to the source Node")
+	}
 	config := protocol.DefaultSessionConfig()
-	config.Provider, config.Model, config.Effort = provider.ID, model.ID, model.DefaultEffort
+	config.Provider, config.Model, config.Credential, config.Effort = saved.ID, saved.DefaultModel, saved.Credential, model.DefaultEffort
 	config.Mode, config.Permission = protocol.WorkModeCode, protocol.PermissionFull
 	session := support.Result[protocol.Session](t, w.Do(protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Project: &project, Config: &config}}))
-	w.OpenSession(session.ID.String())
-	w.Await("the saved source session did not mount its composer", func() bool {
-		id := session.ID.String()
-		return w.App.Page == native.ConversationPage && w.App.Sidebar.Selected == id && w.App.FocusedConversation() == id &&
-			controlCount(w, ui.RoleTextField, support.Label("composer")) == 1
+	if session.Project == nil || *session.Project != project || session.Worktree == (protocol.WorktreeID{}) {
+		t.Fatalf("source session %s is not in the fixture project and worktree", session.ID)
+	}
+	// Prepare the history on the source Node before opening the composer, whose
+	// editable model selection is not part of the branch-fork workflow.
+	changed := make(chan struct{}, 1)
+	release, err := w.Controller.WatchConversation(w.Ctx, session.ID, func() {
+		select {
+		case changed <- struct{}{}:
+		default:
+		}
 	})
-	clickControl(t, w, ui.RoleTextField, support.Label("composer"))
-	w.Tester.Type("Keep this saved turn")
-	clickControl(t, w, ui.RoleButton, support.Label("send"))
-	w.Await("the history fixture did not complete", func() bool {
-		history := readForkHistory(t, w, session.ID)
-		if len(history.Page.Runs) != 1 || history.Page.Runs[0].Status != protocol.ConversationStatusCompleted || len(history.Page.Queue.Items) != 0 ||
-			w.App.FocusedConversation() != session.ID.String() || !w.Tester.HasText("History fixture answer") {
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	queued := support.Result[protocol.QueuedTurn](t, w.Do(protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{
+		Session: session.ID, ExpectedRevision: session.Revision, Message: protocol.ConversationInput{Text: "Keep this saved turn"},
+	}}))
+	if queued.Session != session.ID || queued.ID == (protocol.TurnID{}) || queued.Config.Provider != config.Provider || queued.Config.Model != config.Model ||
+		queued.Config.Permission != config.Permission || queued.Config.Credential == nil || *queued.Config.Credential != *config.Credential {
+		t.Fatalf("turn %s was not admitted with the saved source session and model", queued.ID)
+	}
+	awaitSourceTurn(t, w, session, queued.ID, changed)
+	history := readForkHistory(t, w, session.ID)
+	if len(history.Page.Runs) != 1 || history.Page.Runs[0].Turn != queued.ID || history.Page.Runs[0].Status != protocol.ConversationStatusCompleted ||
+		len(history.Page.Queue.Items) != 0 || calls.Load() != 1 {
+		t.Fatalf("source conversation has unexpected saved history: runs=%+v queue=%+v model requests=%d", history.Page.Runs, history.Page.Queue.Items, calls.Load())
+	}
+
+	w.OpenSession(session.ID.String())
+	w.Await("the saved source conversation did not project its history", func() bool {
+		id := session.ID.String()
+		if w.App.Page != native.ConversationPage || w.App.Sidebar.Selected != id || w.App.FocusedConversation() != id || !w.Tester.HasText("History fixture answer") {
 			return false
 		}
 		for _, current := range w.Controller.Snapshot().Sessions {
@@ -212,10 +244,33 @@ func completedForkSource(t *testing.T, w *support.Window, project protocol.Proje
 		}
 		return false
 	})
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("source conversation made %d model requests, want one", got)
-	}
 	return session
+}
+
+func awaitSourceTurn(t *testing.T, w *support.Window, session protocol.Session, turn protocol.TurnID, changed <-chan struct{}) {
+	t.Helper()
+	for {
+		state, _ := w.Controller.Conversation(session.ID)
+		for _, run := range state.Snapshot.Page.Runs {
+			if run.Turn != turn {
+				continue
+			}
+			if run.Session != session.ID || run.Worktree != session.Worktree || run.Origin != nil {
+				t.Fatalf("source turn ran outside its own session or worktree: %+v", run)
+			}
+			switch run.Status {
+			case protocol.ConversationStatusCompleted:
+				return
+			case protocol.ConversationStatusFailed, protocol.ConversationStatusCancelled, protocol.ConversationStatusInterrupted:
+				t.Fatalf("source turn %s ended as %s: %v", run.Turn, run.Status, run.Error)
+			}
+		}
+		select {
+		case <-changed:
+		case <-w.Ctx.Done():
+			t.Fatalf("source turn %s did not finish: connected=%t observation error=%v: %v", turn, state.Connected, state.Err, w.Ctx.Err())
+		}
+	}
 }
 
 func readForkHistory(t *testing.T, w *support.Window, id protocol.SessionID) protocol.ConversationHistory {
