@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sailry_code_mobile/assembly/code.dart';
+import 'package:sailry_code_mobile/features/resources/files/contribution.dart';
+import 'package:sailry_code_mobile/features/resources/git/contribution.dart';
 import 'package:sailry_mobile/app.dart';
 import 'package:sailry_mobile/assembly/pages.dart';
 import 'package:sailry_mobile/features/conversations/live/draft_settings.dart';
 import 'package:sailry_mobile/features/conversations/live/team.dart';
+import 'package:sailry_mobile/features/resources/ports_contribution.dart';
+import 'package:sailry_mobile/features/terminal/project_resource.dart';
 import 'package:sailry_mobile/l10n/strings.dart';
 import 'package:sailry_mobile/runtime/json.dart';
 import 'package:sailry_mobile/runtime/session.dart';
@@ -12,6 +16,22 @@ import 'package:sailry_mobile/shell/assembly.dart';
 import 'package:sailry_mobile/ui/package_assets.dart';
 
 void main() {
+  test('Code keeps its root routes and project resources in order', () {
+    expect(codeAssembly.defaultRoute, chatRoute);
+    expect(codeAssembly.pages.map((page) => page.id), [
+      chatRoute,
+      hostsRoute,
+      projectsRoute,
+      settingsRoute,
+    ]);
+    expect(codeAssembly.resources, [
+      gitResource,
+      filesResource,
+      terminalResource,
+      portsResource,
+    ]);
+  });
+
   testWidgets('Code owns developer choices in the unchanged common draft', (
     tester,
   ) async {
