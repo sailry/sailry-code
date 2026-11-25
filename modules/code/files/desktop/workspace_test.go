@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -75,10 +76,17 @@ func TestFilesWorkspaceReadsAndOpensSearchResult(t *testing.T) {
 }
 
 func TestFilesWorkspaceManagesEntries(t *testing.T) {
-	w := openFiles(t)
 	folder := t.TempDir()
+	const relative = "docs/copies/copy.txt"
+	w, recovered := openFilesWithTrash(t, folder, relative, "")
+	var trashed atomic.Int32
+	w.Controller.OnDispatch(func(kind string) {
+		if kind == "trash_entry" {
+			trashed.Add(1)
+		}
+	})
 	project := w.CreateProject("Entry actions", folder)
-	w.OpenProjectSession(project.ID)
+	session := w.OpenProjectSession(project.ID)
 	w.Click(w.control(ui.RoleButton, "files"))
 	entry := func(label, name string) {
 		t.Helper()
@@ -133,7 +141,7 @@ func TestFilesWorkspaceManagesEntries(t *testing.T) {
 	w.Click(w.control(ui.RoleTextField, "files_paste_directory"))
 	w.Tester.Key(ui.Cmd, ui.KeyA)
 	w.Tester.Type("docs/copies/copy.txt")
-	copy := filepath.Join(folder, "docs", "copies", "copy.txt")
+	copy := filepath.Join(folder, filepath.FromSlash(relative))
 	if _, err := os.Stat(copy); !os.IsNotExist(err) {
 		t.Fatalf("paste wrote before confirmation: %v", err)
 	}
@@ -149,15 +157,20 @@ func TestFilesWorkspaceManagesEntries(t *testing.T) {
 	})
 	menuAction("copy.txt", "files_trash")
 	confirm := w.control(ui.RoleButton, "files_trash")
-	if _, err := os.Stat(copy); err != nil {
-		t.Fatalf("delete ran before confirmation: %v", err)
+	original, err := os.Stat(copy)
+	if err != nil || trashed.Load() != 0 || !w.Tester.HasText(relative) {
+		t.Fatalf("trash was dispatched before confirmation or did not name %q: requests=%d, entry=%v", relative, trashed.Load(), err)
 	}
 	w.Click(confirm)
-	w.Await("delete did not remove the captured entry", func() bool {
+	w.Await("trash did not move the captured entry and report success", func() bool {
 		_, err := os.Stat(copy)
 		_, shown := w.Tester.AccessByRole(ui.RoleTreeItem, "copy.txt")
-		return os.IsNotExist(err) && !shown
+		return os.IsNotExist(err) && !shown && w.Tester.HasText(support.Label("workspace_completed"))
 	})
+	if relocated, err := os.Stat(recovered); err != nil || !os.SameFile(original, relocated) || trashed.Load() != 1 {
+		t.Fatalf("the same entry was not moved to isolated recovery storage: requests=%d, recovered=%v", trashed.Load(), err)
+	}
+	assertTrashOutcome(t, w, session.Worktree, relative, "")
 
 	w.Click(w.access(ui.RoleTreeItem, "renamed.txt"))
 	w.Await("rename target was not selected", func() bool {
