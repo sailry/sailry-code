@@ -13,7 +13,7 @@ Usage: internal/visualparity/run.sh [options]
 Baseline (plugin packages on the pinned Code commit):
   --base-ref REF         Code commit (default e22c21086fae5502ddacd288670979e653539964)
   --base-harness DIR     Harness checkout at that commit's pin (default .runtime/harness)
-  --plugins-repo DIR     Repository holding the ssh and commands packages;
+  --plugins-repo DIR     Repository holding the ssh, commands and databases packages;
                          required for plugin captures
   --plugins-ref REF      Their commit (default 82622995df2d0a49dd317797daedd93ea3eb3855)
   --base-capture DIR     Reuse an earlier base capture instead of capturing it
@@ -131,8 +131,8 @@ echo "Base Code $(git -C "$code" rev-parse --short=12 "$base_ref"), Harness $act
 
 if test -n "$plugins_repo"; then
   mkdir -p "$out/plugins"
-  git -C "$plugins_repo" archive "$plugins_ref" ssh commands | tar -x -C "$out/plugins"
-  echo "Plugins ssh and commands at $(git -C "$plugins_repo" rev-parse --short=12 "$plugins_ref")" >&2
+  git -C "$plugins_repo" archive "$plugins_ref" ssh commands databases | tar -x -C "$out/plugins"
+  echo "Plugins ssh, commands and databases at $(git -C "$plugins_repo" rev-parse --short=12 "$plugins_ref")" >&2
 fi
 
 head_tree=$head_harness

@@ -32,7 +32,7 @@ func Assembly() desktop.Assembly {
 	return desktop.Assemble(
 		// SSH leads the rail after Conversation, where the SSH package's
 		// navigation entry was.
-		ssh.Register, files.Register, git.Register, databases.Register, market.Register,
+		databases.Register, ssh.Register, files.Register, git.Register, market.Register,
 		codeindex.Register, worktrees.Register,
 		providers.Register, connectors.Register, teams.Register, skills.Register,
 		knowledge.Module(), memory.Register, media.Register, decision.Register,

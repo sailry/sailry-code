@@ -188,7 +188,7 @@ func open(t *testing.T, c config, fixture *peer, locale, mode string) *driver {
 	t.Cleanup(func() { _ = owner.Stop(context.Background()) })
 	if c.plugins != "" {
 		access := sdktest.Inspect(owner)
-		for _, name := range []string{"commands", "ssh"} {
+		for _, name := range []string{"commands", "ssh", "databases"} {
 			info, err := access.InstallPlugin(ctx, filepath.Join(c.plugins, name), "", name)
 			if err != nil || len(info.Issues) != 0 {
 				t.Fatalf("pinned %s package is invalid: %+v, %v", name, info.Issues, err)

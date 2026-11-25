@@ -19,7 +19,7 @@ func TestAssemblySelectsCodeAndBasePages(t *testing.T) {
 	for _, page := range assembly.WorkspacePages {
 		pages = append(pages, page.Page)
 	}
-	if !slices.Equal(pages, []native.Page{ssh.PageID, native.FilesPage, native.GitPage, databases.PageID, "page:settings_plugins"}) {
+	if !slices.Equal(pages, []native.Page{databases.PageID, ssh.PageID, native.FilesPage, native.GitPage, "page:settings_plugins"}) {
 		t.Fatalf("workspace page order = %v", pages)
 	}
 	if !assembly.HasPanelResource(native.Terminal) || !slices.ContainsFunc(assembly.SettingsPages, func(page settings.NativePage) bool { return page.Section == settings.Terminal }) {
