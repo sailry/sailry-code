@@ -63,8 +63,12 @@ unset GOROOT
 export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=0 GOWORK=off GOFLAGS=
 revision=$(bash .github/scripts/harness-revision.sh)
 if test -e "$workspace"; then
-  GOWORK=$workspace go work edit -json | jq -e --arg code "$root" --arg harness "$harness" \
-    '([.Use[].DiskPath] | sort) == ([$code, $harness] | sort) and ((.Replace // []) | length == 0)' >/dev/null ||
+  legacy_root=$root
+  case "${OSTYPE:-}" in msys*|cygwin*) legacy_root=$(cygpath -am "$root") ;; esac
+  GOWORK=$workspace go work edit -json | jq -e --arg code "$legacy_root" \
+    '([.Use[].DiskPath | gsub("\\\\"; "/")] | sort) as $paths |
+     ($paths == (["..", "./harness"] | sort) or $paths == ([$code, ($code + "/.runtime/harness")] | sort))
+     and ((.Replace // []) | length == 0)' >/dev/null ||
     { echo '.runtime/go.work is a custom workspace; refusing to overwrite it' >&2; exit 1; }
 fi
 if test -e "$harness"; then
@@ -80,7 +84,7 @@ else
   git -C "$harness" config --local sailry.codeBootstrap 1
 fi
 if test ! -e "$workspace"; then
-  (cd "$runtime" && go work init "$root" "$harness")
+  (cd "$runtime" && go work init .. ./harness)
 fi
 export GOWORK=$workspace SAILRY_HARNESS_DIR=$harness GOFLAGS=-mod=readonly
 printf 'Harness %s; workspace .runtime/go.work is ready.\n' "$revision" >&2

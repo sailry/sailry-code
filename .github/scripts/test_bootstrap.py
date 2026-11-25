@@ -159,13 +159,24 @@ raise SystemExit(subprocess.run([os.environ["FIXTURE_GIT"], *options, *args]).re
         self.assertNotEqual(self.pinned, self.head)
         self.assertEqual((harness / "packages/official/resources/nested/embedded-resource.txt").read_text(), "Nested pinned resource\n")
         workspace = self.code / ".runtime/go.work"
-        self.assertEqual(json.loads(workspace.read_text())["Use"], [{"DiskPath": str(self.code)}, {"DiskPath": str(harness)}])
+        self.assertEqual(json.loads(workspace.read_text())["Use"], [{"DiskPath": ".."}, {"DiskPath": "./harness"}])
         commands = [json.loads(line) for line in self.go_log.read_text().splitlines()]
         self.assertEqual(commands[-1]["args"], ["build", "./cmd/sailry-code-desktop"])
         before = workspace.read_bytes()
         self.assert_success(self.bootstrap())
         self.assert_untouched_checkout()
         self.assertEqual(workspace.read_bytes(), before)
+
+    def test_workspace_accepts_portable_and_older_absolute_module_paths(self):
+        self.assert_success(self.bootstrap())
+        workspace = self.code / '.runtime/go.work'
+        for paths in [['..', './harness'], [str(self.code), str(self.code / '.runtime/harness')]]:
+            with self.subTest(paths=paths):
+                original = json.dumps({'Use': [{'DiskPath': path} for path in paths]})
+                workspace.write_text(original)
+                self.assert_success(self.bootstrap('vet', './...'))
+                self.assertEqual(workspace.read_text(), original)
+                self.assert_untouched_checkout()
 
     def test_existing_development_checkout_is_not_adopted_or_modified(self):
         harness = self.code / ".runtime/harness"
