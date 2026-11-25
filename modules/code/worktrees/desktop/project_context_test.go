@@ -17,7 +17,7 @@ import (
 )
 
 func TestProjectWorktreeContextAndCreate(t *testing.T) {
-	assembly := native.Assemble(git.Register, worktrees.Register)
+	assembly := native.Assemble(worktrees.Register)
 	if len(assembly.ProjectWorkflows) != 1 || len(assembly.ExecutionSettings) != 0 {
 		t.Fatal("the worktree module must contribute its workflow without adding execution settings")
 	}
@@ -30,6 +30,7 @@ func TestProjectWorktreeContextAndCreate(t *testing.T) {
 		}
 		bind(host)
 	}
+	git.Register(&assembly)
 	w := support.Open(t, node.Assembly{Modules: []node.Module{gitnode.Module(), worktreesnode.Module()}}, assembly)
 	plain, repository := t.TempDir(), t.TempDir()
 	init := exec.Command("git", "-C", repository, "init", "-b", "main")

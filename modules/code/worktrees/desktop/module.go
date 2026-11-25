@@ -1,16 +1,25 @@
 package worktreesdesktop
 
 import (
+	"embed"
+	"slices"
+
 	"github.com/egoist/mygo/ui"
+	"github.com/sailry/sailry-harness/sdk/desktop/controls"
 	"github.com/sailry/sailry-harness/sdk/desktop/i18n"
 	"github.com/sailry/sailry-harness/sdk/desktop/icons"
 	"github.com/sailry/sailry-harness/sdk/desktop/native"
 	"github.com/sailry/sailry-harness/sdk/native/protocol"
 )
 
+//go:embed locales/*.yml
+var locales embed.FS
+
 // Register contributes the project and conversation worktree workflows.
 func Register(assembly *native.Assembly) {
+	assembly.Locales = append(assembly.Locales, locales)
 	assembly.PluginControlReplacements = append(assembly.PluginControlReplacements,
+		native.PluginControlReplacement{Package: "worktrees", Slot: "context", ID: "location"},
 		native.PluginControlReplacement{Package: "worktrees", Slot: "project_menu", ID: "manage"},
 		native.PluginControlReplacement{Package: "worktrees", Slot: "composer", ID: "create"},
 		native.PluginControlReplacement{Package: "worktrees", Slot: "composer", ID: "fork"},
@@ -18,11 +27,29 @@ func Register(assembly *native.Assembly) {
 	assembly.ProjectWorkflows = append(assembly.ProjectWorkflows, func(host native.ProjectWorkflowHost) {
 		host.RegisterMenu(projectMenu(host))
 		host.RegisterLocations(readLocations)
+		host.RegisterWorkspaceAction("worktree_create", CreateAt)
+		host.RegisterWorkspaceAction("worktree_manage", func(_ *ui.Context, workspace native.WorkflowWorkspace, _, _ string) { Manage(workspace) })
+		host.RegisterWorkspaceAction("worktree_fork_from", forkFromBranch)
 		host.RegisterWorktreeActions(native.ConversationWorktreeActions{
-			Create:      func(conversation native.WorkflowConversation) { openManaged(conversation, false) },
-			ForkTurn:    func(conversation native.WorkflowConversation) { openManaged(conversation, true) },
-			ForkSession: forkSession,
+			Create:        func(conversation native.WorkflowConversation) { openManaged(conversation, false) },
+			ForkTurn:      func(conversation native.WorkflowConversation) { openManaged(conversation, true) },
+			ForkSession:   forkSession,
+			Select:        selectLocation,
+			BranchOptions: forkBranchOptions,
 		})
+	})
+}
+
+func forkBranchOptions(c *ui.Context, menu *controls.Menu, branches []native.WorkspaceBranch, choose func(*ui.Context, string, string)) {
+	if !slices.ContainsFunc(branches, func(branch native.WorkspaceBranch) bool { return validForkBase(branch.Name, branch.Commit) }) {
+		return
+	}
+	menu.Submenu(i18n.T(c, "git_fork_from_branch"), func(menu *controls.Menu) {
+		for _, branch := range branches {
+			if validForkBase(branch.Name, branch.Commit) && menu.Item(branch.Name).Chosen() {
+				choose(c, branch.Name, branch.Commit)
+			}
+		}
 	})
 }
 
@@ -43,7 +70,7 @@ func projectMenu(host native.ProjectWorkflowHost) native.ProjectMenuAction {
 	manage := func(project *native.ProjectMenuProject) {
 		if draft, ok := host.NewDraft(project); ok {
 			if workspace, open := draft.OpenWorkspace(); open {
-				workspace.ManageLocations()
+				Manage(workspace)
 			}
 		}
 	}
@@ -56,8 +83,10 @@ func projectMenu(host native.ProjectWorkflowHost) native.ProjectMenuAction {
 				}
 				m.Separator()
 				for _, checkout := range project.Worktrees {
-					if m.Item(checkout.Branch).Checked(checkout.Main).Chosen() {
-						host.OpenLocation(project, checkout.Path)
+					if m.Item(checkout.Branch).Checked(checkout.Main).Disabled(project.Offline).Chosen() {
+						if workspace, open := host.ProjectWorkspace(project); open {
+							selectLocation(workspace, c, checkout.Path)
+						}
 					}
 				}
 				if len(project.Worktrees) > 1 {
