@@ -12,10 +12,7 @@ import '../files_page.dart';
 const filesResource = ProjectResourceFeature(
   entry: _filesEntry,
   openDirectory: _openDirectory,
-  links: [
-    ProjectLinkContribution.target('file', _openFileLink),
-    ProjectLinkContribution.target('directory', _openDirectoryLink),
-  ],
+  links: [ProjectLinkContribution.target('file', _openFileLink)],
 );
 
 ResourceEntry _filesEntry(BuildContext context, ProjectResourceView view) => (
@@ -34,11 +31,6 @@ Future<void> _openFileLink(BuildContext context, ProjectResourceLink link) =>
       link.data as String,
       documents: link.documents,
     );
-
-Future<void> _openDirectoryLink(
-  BuildContext context,
-  ProjectResourceLink link,
-) => _openDirectory(context, link.host, link.worktree, link.data as String);
 
 Future<void> _openDirectory(
   BuildContext context,

@@ -5,7 +5,6 @@ import 'package:sailry_code_mobile/features/resources/files_page.dart';
 import 'package:sailry_mobile/app.dart';
 import 'package:sailry_mobile/assembly/pages.dart';
 import 'package:sailry_mobile/features/conversations/live/references.dart';
-import 'package:sailry_mobile/features/resources/contributions.dart';
 import 'package:sailry_mobile/features/resources/file_page.dart';
 import 'package:sailry_mobile/features/resources/resources_page.dart';
 import 'package:sailry_mobile/l10n/strings.dart';
@@ -62,14 +61,7 @@ void main() {
     final session = AppSession.test(hosts: [host, other]);
     final assembly = MobileAssembly(
       defaultRoute: projectsRoute,
-      resources: [
-        ProjectResourceFeature(
-          openDirectory: (_, _, _, _) async {
-            fail('The declared directory handler must take precedence');
-          },
-        ),
-        filesResource,
-      ],
+      resources: const [filesResource],
       pages: [
         MobilePage(
           id: chatRoute,
@@ -115,7 +107,6 @@ void main() {
     session.selectHost(other.id);
     await tester.pumpAndSettle();
     expect(session.selectedHost, same(other));
-    expect(filesResource.links.map((link) => link.kind), ['file', 'directory']);
 
     await tester.tap(find.text('Source directory'));
     await tester.pumpAndSettle();
