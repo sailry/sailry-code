@@ -22,6 +22,8 @@ const (
 	codeSSHGreeting = "Code SSH fixture shell ready"
 	codeSSHFile     = "notes.txt"
 	codeSSHContents = "remote fixture notes\n"
+	codeSSHCommand  = "fixture-ssh-status"
+	codeSSHOutput   = "remote fixture command\n"
 )
 
 type codeSSHPeer struct {
@@ -30,6 +32,7 @@ type codeSSHPeer struct {
 	files           sftp.Handlers
 	authentications atomic.Int32
 	shells          atomic.Int32
+	commands        atomic.Int32
 }
 
 func newCodeSSHPeer(t *testing.T) *codeSSHPeer {
@@ -70,10 +73,11 @@ func newCodeSSHPeer(t *testing.T) *codeSSHPeer {
 		t.Fatal(err)
 	}
 	peer.port = uint16(listener.Addr().(*net.TCPAddr).Port)
-	ctx := t.Context()
+	ctx, cancel := context.WithCancel(context.WithoutCancel(t.Context()))
 	done := make(chan struct{})
 	t.Cleanup(func() {
 		_ = listener.Close()
+		cancel()
 		<-done
 	})
 	go func() {
@@ -129,6 +133,18 @@ func (peer *codeSSHPeer) session(channel cryptossh.Channel, requests <-chan *cry
 				peer.shells.Add(1)
 				_, _ = io.WriteString(channel, codeSSHGreeting+"\r\n")
 			}
+		case "exec":
+			var input struct{ Command string }
+			if cryptossh.Unmarshal(request.Payload, &input) != nil || input.Command != codeSSHCommand {
+				_ = request.Reply(false, nil)
+				return
+			}
+			if request.Reply(true, nil) == nil {
+				peer.commands.Add(1)
+				_, _ = io.WriteString(channel, codeSSHOutput)
+				_, _ = channel.SendRequest("exit-status", false, cryptossh.Marshal(struct{ Status uint32 }{}))
+			}
+			return
 		case "subsystem":
 			var subsystem struct{ Name string }
 			if cryptossh.Unmarshal(request.Payload, &subsystem) == nil && subsystem.Name == "sftp" {

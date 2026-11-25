@@ -52,6 +52,7 @@ var builtins = map[string][]string{
 func Register(assembly *native.Assembly) {
 	assembly.WorkspacePages = append(assembly.WorkspacePages, Page())
 	assembly.Locales = append(assembly.Locales, Locales)
+	registerLinks(assembly)
 }
 
 func Page() native.NativePage {
