@@ -682,8 +682,8 @@ packages:
     dependency: "direct main"
     description:
       path: "apps/mobile/packages/sailry_bridge"
-      ref: e96d611afc4f203592ee0af4b60b48b983bd5adf
-      resolved-ref: e96d611afc4f203592ee0af4b60b48b983bd5adf
+      ref: edd9814e627938d42399df09e2de7f86dac71301
+      resolved-ref: edd9814e627938d42399df09e2de7f86dac71301
       url: "https://github.com/sailry/sailry-harness.git"
     source: git
     version: "0.1.0"
@@ -691,8 +691,8 @@ packages:
     dependency: "direct main"
     description:
       path: "apps/mobile"
-      ref: e96d611afc4f203592ee0af4b60b48b983bd5adf
-      resolved-ref: e96d611afc4f203592ee0af4b60b48b983bd5adf
+      ref: edd9814e627938d42399df09e2de7f86dac71301
+      resolved-ref: edd9814e627938d42399df09e2de7f86dac71301
       url: "https://github.com/sailry/sailry-harness.git"
     source: git
     version: "0.2.13+31"
