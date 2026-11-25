@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       integration:
-        description: Run the SSH, database server and code-index integration suites
+        description: Run the repository, SSH, database server and code-index integration suites
         type: boolean
         default: false
   workflow_call:
@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       integration:
-        description: Run the SSH, database server and code-index integration suites
+        description: Run the repository, SSH, database server and code-index integration suites
         type: boolean
         default: false
     secrets:
@@ -148,6 +148,62 @@ jobs:
           export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=0
           go test -p 1 -timeout 20m -tags integration \
             ./modules/code/ssh/service ./modules/code/databases/service ./modules/code/code-index/node ./internal/assembly/codehost
+
+  repository-integration:
+    needs: native
+    if: inputs.integration || inputs.distribution
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: linux-amd64, turso: libturso_sync_sdk_kit.so }
+          - { os: macos-15, target: darwin-arm64, turso: libturso_sync_sdk_kit.dylib }
+          - { os: windows-2025, target: windows-amd64, turso: turso_sync_sdk_kit.dll }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SAILRY_TURSO_LIB: ${{ github.workspace }}/.runtime/native/${{ matrix.target }}/${{ matrix.turso }}
+    steps:
+      - name: Repository line endings
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/harness
+      - name: Linux command sandbox
+        if: runner.os == 'Linux'
+        run: bash "$SAILRY_HARNESS_DIR/.github/scripts/setup-linux-command-sandbox.sh"
+      - name: Prepare the pinned Go module cache
+        run: |
+          unset GOROOT
+          go mod download
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: code-native-${{ matrix.target }}
+          path: .runtime/native/${{ matrix.target }}
+      - name: Verify repository test runtime
+        working-directory: .runtime/native/${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if command -v sha256sum >/dev/null; then
+            sha256sum --check SHA256SUMS
+          else
+            shasum -a 256 --check SHA256SUMS
+          fi
+          test -f "$SAILRY_TURSO_LIB"
+      - name: Git engine and Node module integration tests
+        run: |
+          set -euo pipefail
+          unset GOROOT
+          export GOPROXY=off
+          packages=(./modules/code/git/service)
+          if [ "$RUNNER_OS" = Linux ]; then
+            packages+=(./modules/code/git/node ./modules/code/worktrees/node)
+          fi
+          go test -p 1 -timeout 20m -tags integration "${packages[@]}"
 
   native:
     strategy:

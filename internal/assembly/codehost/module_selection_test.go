@@ -25,23 +25,22 @@ func TestPublicNodeModuleSelection(t *testing.T) {
 	for _, selection := range []struct {
 		name            string
 		module          native.Module
+		service         string
 		legacyWorkspace bool
 	}{
 		{name: "none"},
-		{name: "ssh", module: sshnode.Module()},
-		{name: "databases", module: databasesnode.Module()},
-		{name: "git", module: gitnode.Module()},
-		{name: "worktrees", module: worktreesnode.Module()},
-		{name: "terminal", module: terminalnode.Module()},
+		{name: "ssh", module: sshnode.Module(), service: "ssh"},
+		{name: "databases", module: databasesnode.Module(), service: "databases"},
+		{name: "git", module: gitnode.Module(), service: "git"},
+		{name: "worktrees", module: worktreesnode.Module(), service: "worktrees"},
+		{name: "terminal", module: terminalnode.Module(), service: "terminal"},
 		{name: "legacy-worktrees", module: legacyWorkspaceModule{worktreesnode.Module()}, legacyWorkspace: true},
 	} {
 		t.Run(selection.name, func(t *testing.T) {
 			t.Parallel()
 			assembly := native.Assembly{LegacyWorkspaceModules: selection.legacyWorkspace}
-			var moduleID string
 			if selection.module != nil {
 				assembly.Modules = []native.Module{selection.module}
-				moduleID = selection.module.ID()
 			}
 			environment := process.NewEnvironment([]string{"PATH=/usr/bin:/bin"})
 			owner, err := native.StartWithOptions(t.Context(), filepath.Join(t.TempDir(), "profile"), native.Options{
@@ -81,7 +80,7 @@ func TestPublicNodeModuleSelection(t *testing.T) {
 				{"terminal", "terminal_settings", protocol.Command{Kind: "read_terminal_settings"}},
 				{"", "", nodetest.DecodeCommand(t, "list_ssh_terminals", map[string]any{"profile": protocol.NewSshID()})},
 			} {
-				if probe.module == "" || moduleID != probe.module {
+				if probe.module == "" || selection.service != probe.module {
 					admitted, err := owner.Dispatch(t.Context(), owner.ID(), protocol.NewRequest(owner.ID(), probe.command))
 					var fault *protocol.Fault
 					if !errors.As(err, &fault) || fault.Code != protocol.ErrorCodeNotConfigured || admitted.Completion != nil {
@@ -93,17 +92,18 @@ func TestPublicNodeModuleSelection(t *testing.T) {
 					t.Fatalf("%s returned %q, want %q", probe.command.Kind, got.Kind, probe.output)
 				}
 			}
-			if moduleID == "worktrees" {
-				stream, err := owner.Subscribe(t.Context(), owner.ID(), protocol.Topic{Kind: "repository", Data: worktree})
-				if stream != nil {
-					_ = stream.Close()
-				}
-				var fault *protocol.Fault
-				if !errors.As(err, &fault) || fault.Code != protocol.ErrorCodeNotConfigured {
-					t.Fatalf("the shared Git engine exposed a repository subscription: %v", err)
-				}
+			stream, err := owner.Subscribe(t.Context(), owner.ID(), protocol.Topic{Kind: "repository", Data: worktree})
+			if stream != nil {
+				t.Cleanup(func() { _ = stream.Close() })
 			}
-			if moduleID == "databases" {
+			if selection.service == "git" {
+				if err != nil || stream == nil {
+					t.Fatalf("the explicit Git provider could not subscribe: %v", err)
+				}
+			} else if stream != nil || !nodetest.FaultIs(err, protocol.ErrorCodeNotConfigured) {
+				t.Fatalf("repository subscription exposed without an explicit Git provider: %v", err)
+			}
+			if selection.service == "databases" {
 				profile := nodetest.Command(t, owner, protocol.Command{Kind: "save_database", Data: protocol.CommandSaveDatabasePayload{
 					Profile: protocol.DatabaseProfile{ID: protocol.NewDatabaseID(), Name: "SQLite fixture", Connection: protocol.DatabaseConnection{
 						Kind: "sqlite", Data: protocol.DatabaseConnectionSqlitePayload{Path: filepath.Join(t.TempDir(), "fixture.db")},

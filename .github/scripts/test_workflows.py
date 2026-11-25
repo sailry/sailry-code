@@ -258,7 +258,7 @@ class WorkflowConfigurationTests(unittest.TestCase):
 
     def test_moved_integration_suites_have_database_fixtures_and_release_coverage(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        job = workflow.split("\n  integration:\n", 1)[1].split("\n  native:\n", 1)[0]
+        job = workflow.split("\n  integration:\n", 1)[1].split("\n  repository-integration:\n", 1)[0]
         self.assertIn("    needs: native\n", job)
         self.assertIn("    if: inputs.integration || inputs.distribution\n", job)
         self.assertIn("    runs-on: ubuntu-24.04\n", job)
@@ -297,6 +297,36 @@ raise SystemExit(int(os.environ["FIXTURE_STATUS"]))
                 self.assertEqual(json.loads(output.read_text()), ["test", "-p", "1", "-timeout", "20m", "-tags", "integration", *packages])
         release = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertIn("      distribution: true\n", release)
+
+    def test_repository_integration_preserves_engine_platform_coverage(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("\n  repository-integration:\n", 1)[1].split("\n  native:\n", 1)[0]
+        self.assertIn("    needs: native\n", job)
+        self.assertIn("    if: inputs.integration || inputs.distribution\n", job)
+        for target in ["linux-amd64", "darwin-arm64", "windows-amd64"]:
+            self.assertIn(f"target: {target}, turso:", job)
+        self.assertIn("setup-linux-command-sandbox.sh", job)
+        self.assertLess(job.index("go mod download"), job.index("export GOPROXY=off"))
+        self.assertIn("          name: code-native-${{ matrix.target }}\n", job)
+        self.assertIn('test -f "$SAILRY_TURSO_LIB"', job)
+        script = textwrap.dedent(job.split("      - name: Git engine and Node module integration tests\n", 1)[1].split("        run: |\n", 1)[1])
+        engine = "./modules/code/git/service"
+        modules = ["./modules/code/git/node", "./modules/code/worktrees/node"]
+        for package in [engine, *modules]:
+            self.assertTrue(any((ROOT / package).glob("*integration_test.go")), package)
+        with tempfile.TemporaryDirectory(prefix="code-repository-integration-") as temporary:
+            tool = Path(temporary) / "go"
+            tool.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+print(json.dumps([os.environ.get("GOPROXY"), sys.argv[1:]]))
+''')
+            tool.chmod(0o755)
+            env = {**os.environ, "PATH": temporary + os.pathsep + os.environ["PATH"]}
+            for platform in ["Linux", "macOS", "Windows"]:
+                result = subprocess.run(["bash", "-c", script], cwd=ROOT,
+                                        env={**env, "RUNNER_OS": platform}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                packages = [engine, *modules] if platform == "Linux" else [engine]
+                self.assertEqual(json.loads(result.stdout), ["off", ["test", "-p", "1", "-timeout", "20m", "-tags", "integration", *packages]])
 
     def test_go_checks_download_native_linux_runtime_before_running_tests(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text()

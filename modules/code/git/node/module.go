@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	git "github.com/sailry/sailry-code/modules/code/git/service"
 	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"github.com/sailry/sailry-harness/sdk/native/protocol"
 )
@@ -33,7 +34,7 @@ func (module) ID() string                { return "git" }
 func (module) ReplacesPlugins() []string { return []string{"git"} }
 
 func (module) WorkspaceServices() native.WorkspaceServices {
-	return native.WorkspaceServices{Git: true}
+	return native.WorkspaceServices{Git: true, Bind: git.BindWorkspace(bindWorkspace)}
 }
 
 func (module) Catalog() []native.ToolMeta {

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 
+	git "github.com/sailry/sailry-code/modules/code/git/service"
 	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"github.com/sailry/sailry-harness/sdk/native/protocol"
 )
@@ -31,7 +32,7 @@ func (module) ID() string                { return "worktrees" }
 func (module) ReplacesPlugins() []string { return []string{"worktrees"} }
 
 func (module) WorkspaceServices() native.WorkspaceServices {
-	return native.WorkspaceServices{Worktrees: true}
+	return native.WorkspaceServices{Worktrees: true, Bind: git.BindWorkspace(bindWorkspace)}
 }
 
 func (module) Catalog() []native.ToolMeta {

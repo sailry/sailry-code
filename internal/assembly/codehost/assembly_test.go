@@ -43,6 +43,9 @@ func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
 		}
 		if provider, ok := module.(node.WorkspaceServiceProvider); ok {
 			services := provider.WorkspaceServices()
+			if services.Bind == nil {
+				t.Fatalf("workspace provider %q has no handler binding", id)
+			}
 			workspace.Git = workspace.Git || services.Git
 			workspace.Worktrees = workspace.Worktrees || services.Worktrees
 		}
