@@ -221,6 +221,25 @@ func open(t *testing.T, c config, fixture *peer, locale, mode string) *driver {
 	tester.Frame()
 	d := &driver{t: t, c: c, ctx: ctx, peer: fixture, locale: locale, theme: mode, mode: c.mode(), owner: owner, window: window, tester: tester, l: sshLabels[locale]}
 	d.seedWorkspace(project)
+	if c.plugins != "" {
+		// The archival shell merges asynchronously loaded entries in arrival order.
+		// Pin the two historical destinations to their manifest placement order.
+		prefix := "plugin:" + owner.ID().String() + "/"
+		if err := d.await("the archived navigation registrations", 10*time.Second, func() bool {
+			order, pins := window.App.FeaturePreferences()
+			database, ssh := slices.Index(order, prefix+"databases"), slices.Index(order, prefix+"ssh")
+			if database < 0 || ssh < 0 {
+				return false
+			}
+			if ssh < database {
+				order[ssh], order[database] = order[database], order[ssh]
+				window.App.SetFeaturePreferences(order, pins)
+			}
+			return true
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return d
 }
 
