@@ -8,7 +8,8 @@ Usage: ./dev.sh [build|test|vet GO_ARGUMENTS...]
        ./dev.sh desktop [dev|NAME]
        ./dev.sh native[-build]
 
-No command: prepare the exact Harness pin, recursive submodules and .runtime/go.work.
+No command: prepare the exact Harness SDK pin and .runtime/go.work; no submodules.
+Code preinstalls no plugins or themes; their repositories are not build dependencies.
 Requires Bash, Go, Git and jq; native builds also need rustup and a system linker.
 Go 1.27.3, CGO_ENABLED=0, no inherited GOROOT; manifests/locks stay read-only.
   just desktop        Code default; no --data-dir, preserving first-start migration
@@ -76,8 +77,7 @@ if test -e "$harness"; then
     exit 1
   fi
   status=$(git -C "$harness" status --porcelain --untracked-files=all --ignore-submodules=none)
-  submodules=$(git -C "$harness" submodule status --recursive)
-  test -z "$status" && ! grep -Eq '^[-+U]' <<<"$submodules" ||
+  test -z "$status" ||
     { echo 'The managed Harness checkout or its submodules changed; refusing to modify it' >&2; exit 1; }
   verified_revision=$(git -C "$harness" rev-parse --verify HEAD)
   verified_timestamp=$(TZ=UTC0 git -C "$harness" show -s --date=format-local:%Y%m%d%H%M%S --format=%cd "$verified_revision")
@@ -104,7 +104,6 @@ else
   git -C "$harness" remote add origin "$repository"
   git -C "$harness" fetch --quiet --depth=1 origin "$revision"
   git -C "$harness" checkout --quiet --detach "$revision"
-  git -C "$harness" submodule update --init --recursive
   git -C "$harness" config --local sailry.codeBootstrap 1
 fi
 if test ! -e "$workspace"; then

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -54,7 +55,7 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		if meta, ok := assembly.LookupTool("desktop_snapshot"); !ok || meta.Display == nil || meta.Display.Locales["zh-CN"] == "" {
 			t.Fatalf("bare tool presentation missing for desktop_snapshot: %+v %v", meta, ok)
 		}
-		// Retired core-adjacent packages are listed in RetiredBundled; office stays active with its skills.
+		// Core-adjacent packages stay retired; office remains an optional skills package.
 		for _, retired := range []string{"code", "web-search", "external-browser", "browser", "computer", "memory"} {
 			if !slices.Contains(sdktest.RetiredBundled(), retired) {
 				t.Fatalf("%s is not in RetiredBundled: %v", retired, sdktest.RetiredBundled())
@@ -104,15 +105,9 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		}
 		defer n.Stop(context.Background())
 
-		// Verify retired packages are absent, office stays installed, and native skills/commands work.
 		installed := commandFixture(t, n, protocol.Command{Kind: "list_plugins"}).Data.([]protocol.PluginSummary)
-		for _, retired := range []string{"code", "web-search", "external-browser", "browser", "computer", "memory"} {
-			if slices.ContainsFunc(installed, func(s protocol.PluginSummary) bool { return s.Name == retired }) {
-				t.Fatalf("retired %s package was still installed: %+v", retired, installed)
-			}
-		}
-		if !slices.ContainsFunc(installed, func(s protocol.PluginSummary) bool { return s.Name == "office" && s.Enabled }) {
-			t.Fatalf("office skills package was not installed and enabled")
+		if len(installed) != 0 {
+			t.Fatalf("Code preinstalled packages: %+v", installed)
 		}
 		snap := snapshotFixture(t, n)
 		if !slices.ContainsFunc(snap.NativeSkills, func(s protocol.NativeSkill) bool { return s.Package == "web-search" && s.Skill.Name == "research" }) {
@@ -184,9 +179,11 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 			}},
 		)
 
-		// Disable files and git UI plugins: native modules must keep serving tools.
+		// Disable explicitly installed files and git UI fixtures: native modules must keep serving tools.
 		for _, pkg := range []string{"files", "git"} {
-			info := commandFixture(t, n, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: pkg}}).Data.(protocol.PluginInfo)
+			info := installPluginFixture(t, n, pkg, map[string]string{
+				"plugin.json": `{"$schema":"` + sdktest.ManifestSchema + `","name":"` + pkg + `","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","requires_modules":["` + pkg + `"]}}}`,
+			})
 			commandFixture(t, n, protocol.Command{Kind: "set_plugin_enabled", Data: protocol.CommandSetPluginEnabledPayload{
 				Name: pkg, ExpectedRevision: info.Summary.Revision, Enabled: false,
 			}})
@@ -336,13 +333,61 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		}
 		defer prepared.Stop(context.Background())
 
-		// Admit and disable the bundled UI packages before reopening without their required modules.
+		before := map[string]protocol.PluginInfo{}
+		settings := map[string]map[string]any{}
+		const content = "---\nname: retained-fixture\ndescription: Preserve explicitly installed package content.\n---\nKeep this local fixture across restarts.\n"
 		for _, pkg := range []string{"git", "databases", "ssh"} {
-			info := commandFixture(t, prepared, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: pkg}}).Data.(protocol.PluginInfo)
+			info := installPluginFixture(t, prepared, pkg, map[string]string{
+				"plugin.json":                       `{"$schema":"` + sdktest.ManifestSchema + `","name":"` + pkg + `","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","requires_modules":["` + pkg + `"],"settings_schema":"dev.sailry.platform/settings.json","settings_page":{"navigation":{"label":"Settings"}}}}}`,
+				"dev.sailry.platform/settings.json": `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"label":{"type":"string"}},"additionalProperties":false}`,
+				"skills/retained-fixture/SKILL.md":  content,
+			})
+			value := "saved " + pkg + " setting"
+			saved := acceptanceDo[struct {
+				Values map[string]string `json:"values"`
+			}](t, prepared, decodeCommandFixture(t, "save_plugin_settings", map[string]any{
+				"package": sdktest.PackageReference(info), "values": map[string]string{"label": value}, "secrets": map[string]any{},
+			}))
+			if saved.Values["label"] != value {
+				t.Fatalf("%s setting was not saved: %+v", pkg, saved)
+			}
+			info = commandFixture(t, prepared, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: pkg}}).Data.(protocol.PluginInfo)
 			commandFixture(t, prepared, protocol.Command{Kind: "set_plugin_enabled", Data: protocol.CommandSetPluginEnabledPayload{
 				Name: pkg, ExpectedRevision: info.Summary.Revision, Enabled: false,
 			}})
+			before[pkg] = commandFixture(t, prepared, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: pkg}}).Data.(protocol.PluginInfo)
+			settings[pkg] = acceptanceDo[map[string]any](t, prepared, decodeCommandFixture(t, "read_plugin_settings", map[string]any{
+				"package": sdktest.PackageReference(before[pkg]),
+			}))
 		}
+		verifyRetained := func(owner *Node, haveModules bool) {
+			t.Helper()
+			for pkg, original := range before {
+				info := commandFixture(t, owner, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: pkg}}).Data.(protocol.PluginInfo)
+				if info.Summary.Enabled || info.Summary.Revision != original.Summary.Revision || info.Summary.Digest != original.Summary.Digest || !reflect.DeepEqual(info.Summary.Version, original.Summary.Version) {
+					t.Fatalf("restart changed disabled %s package: %+v, want %+v", pkg, info.Summary, original.Summary)
+				}
+				reference := sdktest.PackageReference(info)
+				state, failure := acceptanceCall[map[string]any](t, owner, decodeCommandFixture(t, "read_plugin_settings", map[string]any{"package": reference}))
+				if haveModules {
+					if failure != nil {
+						t.Fatal(failure)
+					}
+					if !reflect.DeepEqual(state, settings[pkg]) {
+						t.Fatalf("restart changed %s settings: %+v, want %+v", pkg, state, settings[pkg])
+					}
+				} else {
+					acceptanceFault(t, pkg+" settings without its module", failure, protocol.ErrorCodeNotConfigured, "plugin version is incompatible")
+				}
+				document := acceptanceDo[protocol.PluginSkillsDocument](t, owner, decodeCommandFixture(t, "read_skill_document", map[string]any{
+					"source": map[string]any{"kind": "installed", "data": map[string]any{"package": reference, "skill": "retained-fixture"}},
+				}))
+				if document.Content != content {
+					t.Fatalf("restart changed %s content: %q", pkg, document.Content)
+				}
+			}
+		}
+		verifyRetained(prepared, true)
 		if err := prepared.Stop(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -356,6 +401,7 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer n.Stop(context.Background())
+		verifyRetained(n, false)
 
 		secret := protocol.NewSecret("key")
 		provider := protocol.DefaultConversationProvider()
@@ -410,6 +456,15 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		if json.Unmarshal([]byte(discover), &found) == nil && len(found.Tools) != 0 {
 			t.Fatalf("omitted modules still exposed tools: %s", discover)
 		}
+		if err := n.Stop(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		restored, err := StartWithOptions(t.Context(), profileDir, Options{Assembly: codehost.Assembly(), Environment: &env})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer restored.Stop(context.Background())
+		verifyRetained(restored, true)
 	})
 }
 

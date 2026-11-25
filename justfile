@@ -4,7 +4,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list
 
-# Prepare the exact Harness pin and recursive resources without changing manifests.
+# Prepare the exact Harness SDK pin without plugin/theme repositories or manifest changes.
 bootstrap:
     bash dev.sh
 

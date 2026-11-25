@@ -53,13 +53,18 @@ func TestGitBadgeCommandReporting(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = node.Stop(context.Background()) })
+	const entry = "dev.sailry.platform/host/main.js"
+	installPluginFixture(t, node, "git", map[string]string{
+		"plugin.json": `{"$schema":"` + sdktest.ManifestSchema + `","name":"git","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","scope":"host","requires_modules":["git"],"actions":["git.read"],"ui":[{"id":"changes","slot":"status","kind":"button","label":{"label":"Git"},"handler":"changes","order":0}],"host":{"entry":"` + entry + `","resources":["` + entry + `"],"handlers":["badge"],"read_only":["badge"],"status":{"read":"badge","changes":["repository"]}}}}}`,
+		entry:         `import {inspectGit} from 'sailry/sdk'; export async function badge() { await inspectGit(); return []; }`,
+	})
 	project := commandFixture(t, node, protocol.Command{Kind: "register_project", Data: protocol.CommandRegisterProjectPayload{Name: "Git badge", Path: root}}).Data.(protocol.Project)
 	config := diagnosticSessionConfigFixture(t, node)
 	session := commandFixture(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Project: &project.ID, Config: &config}}).Data.(protocol.Session)
 	output := commandFixture(t, node, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: "git"}})
 	info, ok := dispatchPayload[protocol.PluginInfo](output.Data)
 	if !ok || info.Extension == nil || info.Extension.Host == nil || info.Extension.Host.Status == nil {
-		t.Fatal("bundled Git Status callback is unavailable")
+		t.Fatal("fixture Git status callback is unavailable")
 	}
 	command := protocol.Command{Kind: "read_plugin_callback", Data: protocol.CommandReadPluginCallbackPayload{Handler: info.Extension.Host.Status.Read, Input: json.RawMessage(`{}`)}}
 	scope := protocol.PluginContext{Surface: protocol.PluginDesktopSurface{Kind: "composer"}, Package: sdktest.PackageReference(info), Worktree: &session.Worktree, Session: &session.ID}

@@ -2,6 +2,8 @@ package codedesktop_test
 
 import (
 	"context"
+	"database/sql"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -17,6 +19,7 @@ import (
 	"github.com/sailry/sailry-harness/sdk/native/node"
 	"github.com/sailry/sailry-harness/sdk/native/process"
 	"github.com/sailry/sailry-harness/sdk/native/protocol"
+	"github.com/sailry/sailry-harness/sdk/sdktest"
 )
 
 func TestProjectContextWithCodeHost(t *testing.T) {
@@ -27,6 +30,21 @@ func TestProjectContextWithCodeHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = owner.Stop(context.Background()) })
+	source := t.TempDir()
+	manifest := `{"$schema":"` + sdktest.ManifestSchema + `","name":"commands","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","scope":"host","requires_modules":["terminal"]}}}`
+	if err := os.WriteFile(filepath.Join(source, "plugin.json"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	commands, err := sdktest.Inspect(owner).InstallPlugin(t.Context(), source, "", "commands")
+	if err != nil || len(commands.Issues) != 0 {
+		t.Fatalf("commands fixture is invalid: %+v, %v", commands.Issues, err)
+	}
+	if err := sdktest.Inspect(owner).Store().Node.Write(t.Context(), func(db *sql.Conn) error {
+		_, err := sdktest.InstallPlugin(t.Context(), db, commands, 0, true)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	window, err := fixtures.Connect(t.Context(), owner, profile, codedesktop.Assembly())
 	if err != nil {
 		t.Fatal(err)

@@ -23,20 +23,8 @@ func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
 	if assembly.CodeIndex == nil || assembly.Databases == nil || assembly.SSH == nil || assembly.Terminal == nil {
 		t.Fatal("Code assembly omitted a development service")
 	}
-	defaults := map[string]bool{}
-	for _, item := range assembly.BundledDefaults {
-		if !item.Enabled || defaults[item.Name] {
-			t.Fatalf("unexpected default selection: %v", item)
-		}
-		defaults[item.Name] = true
-	}
-	for _, name := range []string{"brief", "claude-auth", "commands", "context7", "copilot-auth", "databases", "files", "git", "github", "goals", "office", "openai-auth", "provider-status", "reminders", "scheduled-tasks", "ssh", "statistics", "workbuddy", "worktrees"} {
-		if !defaults[name] {
-			t.Errorf("Code assembly omitted default plugin %q", name)
-		}
-	}
-	if len(defaults) != 19 {
-		t.Errorf("Code default plugins = %v", defaults)
+	if assembly.BundledDefaults == nil || len(assembly.BundledDefaults) != 0 {
+		t.Fatalf("Code must explicitly select no default plugins: %#v", assembly.BundledDefaults)
 	}
 	if len(assembly.Modules) != len(base.Modules)+len(development) {
 		t.Fatalf("Code assembly has %d modules, want %d", len(assembly.Modules), len(base.Modules)+len(development))

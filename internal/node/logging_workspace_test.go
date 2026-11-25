@@ -118,7 +118,9 @@ func TestWorkspaceReadCommandDiagnostics(t *testing.T) {
 		t.Fatal("inspection did not reach native Git status")
 	}
 	const invalidPackage = "private package/name"
-	install := protocol.NewRequest(node.ID(), protocol.Command{Kind: "install_bundled_plugin", Data: protocol.CommandInstallBundledPluginPayload{Name: invalidPackage}})
+	install := protocol.NewRequest(node.ID(), decodeCommandFixture(t, "install_plugin", map[string]any{
+		"worktree": tree, "path": ".", "name": invalidPackage, "expected_revision": 0,
+	}))
 	admission, err := node.Dispatch(t.Context(), node.ID(), install)
 	if err != nil || !admission.Receipt.Durable {
 		t.Fatalf("fixture installation was not admitted durably: %v, %v", admission.Receipt, err)
@@ -172,7 +174,7 @@ func TestWorkspaceReadCommandDiagnostics(t *testing.T) {
 		if strings.Contains(line, " request="+install.ID.String()+" ") && strings.Contains(line, " phase=failed ") {
 			installFailures++
 			if !strings.Contains(line, " WARN desktop area=command phase=failed ") ||
-				!strings.Contains(line, " command=install_bundled_plugin ") || !strings.Contains(line, " command_stage=completion code=invalid_request ") {
+				!strings.Contains(line, " command=install_plugin ") || !strings.Contains(line, " command_stage=completion code=invalid_request ") {
 				t.Errorf("installation failure logged as %q", line)
 			}
 		}

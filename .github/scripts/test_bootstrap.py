@@ -43,7 +43,8 @@ mkdir -p "$output"
 printf '%s\\n' 'Fixture library; no native compilation' > "$output/$FIXTURE_LIBRARY"
 ''')
         (cls.source / "source.txt").write_text("Pinned source\n")
-        cls.git_run("-C", str(cls.source), "submodule", "add", "--quiet", child.as_uri(), "packages/official")
+        for name in ["plugins", "themes"]:
+            cls.git_run("-C", str(cls.source), "submodule", "add", "--quiet", child.as_uri(), name)
         cls.commit(cls.source)
         cls.pinned = cls.git_run("-C", str(cls.source), "rev-parse", "HEAD").strip()
         cls.git_run("-C", str(cls.source), "tag", "v0.1.0")
@@ -145,6 +146,8 @@ with Path(os.environ["FIXTURE_GIT_LOG"]).open("a") as log:
     log.write(json.dumps(args) + "\\n")
 if os.environ.get("FIXTURE_OFFLINE") == "1" and any(argument in {"fetch", "ls-remote"} for argument in args):
     raise SystemExit("Git network resolution disabled in offline fixture")
+if "submodule" in args or any(argument.startswith("--recurse-submodules") for argument in args):
+    raise SystemExit("Plugin and theme repositories are unavailable in the SDK fixture")
 source = Path(os.environ["FIXTURE_SOURCE"]).as_uri()
 options = ["-c", "url." + source + ".insteadOf=https://github.com/sailry/sailry-harness",
            "-c", "url." + source + ".insteadOf=https://github.com/sailry/sailry-harness.git"]
@@ -263,7 +266,9 @@ raise SystemExit(subprocess.run([os.environ["FIXTURE_GIT"], *options, *args], en
                 elif change == "origin":
                     self.git_run("-C", str(harness), "remote", "set-url", "origin", str(self.source))
                 else:
-                    draft = "source.txt" if change == "dirty" else "packages/official/resources/nested/embedded-resource.txt"
+                    if change == "submodule":
+                        self.git_run("-C", str(harness), "submodule", "update", "--init", "--recursive")
+                    draft = "source.txt" if change == "dirty" else "plugins/resources/nested/embedded-resource.txt"
                     (harness / draft).write_text("Preserve developer work\n")
                 result = self.bootstrap("desktop", FIXTURE_OFFLINE="1")
                 self.assertNotEqual(result.returncode, 0)
@@ -281,12 +286,15 @@ raise SystemExit(subprocess.run([os.environ["FIXTURE_GIT"], *options, *args], en
         self.assertEqual(commands, [["mod", "edit", "-json"]])
         self.assert_untouched_checkout()
 
-    def test_fresh_bootstrap_fetches_pinned_recursive_resources_and_runs_readonly_build(self):
+    def test_fresh_bootstrap_fetches_only_the_sdk_pin_and_runs_readonly_build(self):
         self.assert_success(self.bootstrap("build", "./cmd/sailry-code-desktop", FIXTURE_NO_ORIGIN="1"))
         harness = self.code / ".runtime/harness"
         self.assertEqual(self.git_run("-C", str(harness), "rev-parse", "HEAD").strip(), self.pinned)
         self.assertNotEqual(self.pinned, self.head)
-        self.assertEqual((harness / "packages/official/resources/nested/embedded-resource.txt").read_text(), "Nested pinned resource\n")
+        for name in ["plugins", "themes"]:
+            self.assertFalse((harness / name / "resources/nested/embedded-resource.txt").exists())
+        calls = [json.loads(line) for line in self.git_log.read_text().splitlines()]
+        self.assertFalse(any("submodule" in call for call in calls), calls)
         workspace = self.code / ".runtime/go.work"
         self.assertEqual(json.loads(workspace.read_text())["Use"], [{"DiskPath": ".."}, {"DiskPath": "./harness"}])
         commands = [json.loads(line) for line in self.go_log.read_text().splitlines()]
@@ -322,10 +330,12 @@ raise SystemExit(subprocess.run([os.environ["FIXTURE_GIT"], *options, *args], en
         self.assertEqual(self.go_log.read_text(), "")
 
     def test_dirty_root_and_nested_submodule_are_preserved(self):
-        for relative in ["source.txt", "packages/official/resources/nested/embedded-resource.txt"]:
+        for relative in ["source.txt", "plugins/resources/nested/embedded-resource.txt"]:
             with self.subTest(relative=relative):
                 self.new_code()
                 self.assert_success(self.bootstrap())
+                if relative.startswith("plugins/"):
+                    self.git_run("-C", str(self.code / ".runtime/harness"), "submodule", "update", "--init", "--recursive")
                 draft = self.code / ".runtime/harness" / relative
                 draft.write_text("Uncommitted developer edit\n")
                 result = self.bootstrap()
@@ -387,6 +397,7 @@ raise SystemExit(subprocess.run([os.environ["FIXTURE_GIT"], *options, *args], en
         self.assertGreaterEqual(len(result.stdout.splitlines()), 15)
         self.assertLessEqual(len(result.stdout.splitlines()), 25)
         self.assertIn("no --data-dir", result.stdout)
+        self.assertIn("Code preinstalls no plugins or themes", result.stdout)
         self.assertIn("just desktop native-smoke twice", result.stdout)
         for arguments in [("mod", "tidy"), ("build", "-mod=mod"), ("test", "-modfile=other.mod")]:
             with self.subTest(arguments=arguments):

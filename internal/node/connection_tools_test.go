@@ -200,6 +200,9 @@ func TestConnectionTools(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	installPluginFixture(t, node, "skill-fixture", map[string]string{
+		"plugin.json": `{"$schema":"` + sdktest.ManifestSchema + `","name":"skill-fixture","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","scope":"host"}}}`,
+	})
 	bound := config
 	bound.Resource = &protocol.ConnectionResource{Kind: "database", Data: shared.ID}
 	connection := commandFixture(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &bound}}).Data.(protocol.Session)
@@ -231,7 +234,7 @@ func TestConnectionTools(t *testing.T) {
 		{"connection conversation", connection, []protocol.ConversationReference{target("file", text("note.txt"))}, protocol.ErrorCodePermissionDenied, "connection conversations only accept connection references"},
 		{"missing plugin", session, []protocol.ConversationReference{target("plugin", text("missing-plugin"))}, protocol.ErrorCodeInvalidRequest, "referenced plugin is disabled or unavailable"},
 		{"desktop plugin", session, []protocol.ConversationReference{target("plugin", text("desktop-fixture"))}, protocol.ErrorCodeInvalidRequest, "desktop-only plugins cannot be referenced by an agent"},
-		{"missing skill", session, []protocol.ConversationReference{target("skill", &protocol.ConversationReferenceTargetSkillPayload{Package: "github", Name: "missing"})}, protocol.ErrorCodeInvalidRequest, "referenced skill is unavailable in this plugin version"},
+		{"missing skill", session, []protocol.ConversationReference{target("skill", &protocol.ConversationReferenceTargetSkillPayload{Package: "skill-fixture", Name: "missing"})}, protocol.ErrorCodeInvalidRequest, "referenced skill is unavailable in this plugin version"},
 		{"unreachable SSH", session, []protocol.ConversationReference{target("ssh", &unknownSsh)}, protocol.ErrorCodePermissionDenied, "referenced SSH connection is not available to this conversation"},
 		{"unreachable database", session, []protocol.ConversationReference{target("database", &protocol.ConversationReferenceTargetDatabasePayload{Connection: private.ID})}, protocol.ErrorCodePermissionDenied, "referenced database is not available to this conversation"},
 		{"table without database", session, []protocol.ConversationReference{target("database", &protocol.ConversationReferenceTargetDatabasePayload{Connection: shared.ID, Table: &protocol.DatabaseTable{Schema: "public", Name: "users"}})}, protocol.ErrorCodeInvalidRequest, "invalid database reference"},

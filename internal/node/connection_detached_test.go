@@ -85,19 +85,14 @@ func testDetachedConnectionTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	owners := map[string]protocol.PluginReference{}
-	if err := sdktest.Inspect(node).Store().Node.Read(ctx, func(db *sql.Conn) error {
-		for _, name := range []string{"databases", "ssh"} {
-			info, err := sdktest.ReadPlugin(ctx, db, name)
-			if err != nil {
-				return err
-			}
-			if info != nil {
-				owners[name] = sdktest.PackageReference(*info)
-			}
-		}
-		return nil
-	}); err != nil || len(owners) != 2 {
-		t.Fatalf("connection packages: %v, %v", owners, err)
+	for name, actions := range map[string]string{
+		"databases": `["databases.read","databases.control","databases.manage","conversation.read","conversation.control","projects.read","ssh.read"]`,
+		"ssh":       `["ssh.read","ssh.control","ssh.manage","conversation.read","conversation.control","projects.read"]`,
+	} {
+		info := installPluginFixture(t, node, name, map[string]string{
+			"plugin.json": `{"$schema":"` + sdktest.ManifestSchema + `","name":"` + name + `","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","scope":"host","requires_modules":["` + name + `"],"actions":` + actions + `}}}`,
+		})
+		owners[name] = sdktest.PackageReference(info)
 	}
 	controller := func(owner string, command protocol.Command) protocol.Output {
 		t.Helper()
