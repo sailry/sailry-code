@@ -10,8 +10,8 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sailry/sailry-code/internal/assembly/codehost"
 	support "github.com/sailry/sailry-code/internal/testsupport/desktop"
+	files "github.com/sailry/sailry-code/modules/code/files/desktop"
 	git "github.com/sailry/sailry-code/modules/code/git/desktop"
-	files "github.com/sailry/sailry-harness/modules/files/desktop"
 	"github.com/sailry/sailry-harness/sdk/desktop/native"
 )
 

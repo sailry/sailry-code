@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sailry/sailry-code/internal/assembly/codedesktop"
+	databases "github.com/sailry/sailry-code/modules/code/databases/desktop"
 	ssh "github.com/sailry/sailry-code/modules/code/ssh/desktop"
 	"github.com/sailry/sailry-harness/sdk/desktop"
 	"github.com/sailry/sailry-harness/sdk/desktop/i18n"
@@ -18,7 +19,7 @@ func TestAssemblySelectsCodeAndBasePages(t *testing.T) {
 	for _, page := range assembly.WorkspacePages {
 		pages = append(pages, page.Page)
 	}
-	if !slices.Equal(pages, []native.Page{ssh.PageID, native.FilesPage, native.GitPage, "page:settings_plugins"}) {
+	if !slices.Equal(pages, []native.Page{ssh.PageID, native.FilesPage, native.GitPage, databases.PageID, "page:settings_plugins"}) {
 		t.Fatalf("workspace page order = %v", pages)
 	}
 	if !assembly.HasPanelResource(native.Terminal) || !slices.ContainsFunc(assembly.SettingsPages, func(page settings.NativePage) bool { return page.Section == settings.Terminal }) {
@@ -30,8 +31,8 @@ func TestAssemblySelectsCodeAndBasePages(t *testing.T) {
 	if len(assembly.ExecutionSettings) != 1 {
 		t.Fatal("Code index settings are absent")
 	}
-	if len(assembly.ProjectWorkflows) != 1 {
-		t.Fatal("Code worktree actions are absent")
+	if got := len(assembly.ProjectWorkflows); got != 2 {
+		t.Fatalf("project workflows = %d, want Git and Worktrees", got)
 	}
 	catalog := i18n.New(assembly.Locales...)
 	for _, language := range []string{"en", "zh-CN"} {

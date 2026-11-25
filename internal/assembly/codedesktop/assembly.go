@@ -3,6 +3,8 @@ package codedesktop
 
 import (
 	codeindex "github.com/sailry/sailry-code/modules/code/code-index/desktop"
+	databases "github.com/sailry/sailry-code/modules/code/databases/desktop"
+	files "github.com/sailry/sailry-code/modules/code/files/desktop"
 	git "github.com/sailry/sailry-code/modules/code/git/desktop"
 	ssh "github.com/sailry/sailry-code/modules/code/ssh/desktop"
 	terminal "github.com/sailry/sailry-code/modules/code/terminal/desktop"
@@ -12,7 +14,6 @@ import (
 	connections "github.com/sailry/sailry-harness/modules/connections/desktop"
 	connectors "github.com/sailry/sailry-harness/modules/connectors/desktop"
 	decision "github.com/sailry/sailry-harness/modules/decision/desktop"
-	files "github.com/sailry/sailry-harness/modules/files/desktop"
 	hooks "github.com/sailry/sailry-harness/modules/hooks/desktop"
 	knowledge "github.com/sailry/sailry-harness/modules/knowledge/desktop"
 	market "github.com/sailry/sailry-harness/modules/market/desktop"
@@ -31,7 +32,7 @@ func Assembly() desktop.Assembly {
 	return desktop.Assemble(
 		// SSH leads the rail after Conversation, where the SSH package's
 		// navigation entry was.
-		ssh.Register, files.Register, git.Register, market.Register,
+		ssh.Register, files.Register, git.Register, databases.Register, market.Register,
 		codeindex.Register, worktrees.Register,
 		providers.Register, connectors.Register, teams.Register, skills.Register,
 		knowledge.Module(), memory.Register, media.Register, decision.Register,
