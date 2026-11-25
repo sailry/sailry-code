@@ -82,6 +82,56 @@ func TestProjectAndConversationTerminals(t *testing.T) {
 		legacy.T = t
 		checkLegacyTerminalPackage(&legacy, mainProject.Name)
 	})
+
+	tab := native.PanelTab{Kind: native.Terminal, ID: panelTerminal.String()}
+	w.OpenProjectSession(mainProject.ID)
+	if slices.Contains(app.Panel.Tabs, tab) || !app.HasPanelTab(tab) {
+		t.Fatalf("leaving the conversation did not park its terminal: %v", app.Panel.Tabs)
+	}
+	checkTerminalDirectory(w, panelTerminal, session.Worktree, detailPath)
+	w.OpenSession(session.ID.String())
+	w.Await("returning to the conversation did not restore the terminal tab", func() bool {
+		return app.PanelOpen && app.Panel.Active == tab
+	})
+	requestClose := func() {
+		t.Helper()
+		var bounds ui.Rect
+		w.Await("the Terminal tab is absent from the strip", func() bool {
+			for _, entry := range w.Tester.AccessAll() {
+				if entry.Name == support.Label("terminal") && w.InDetails(entry) && entry.Bounds.Y+entry.Bounds.H <= native.HeaderHeight {
+					bounds = entry.Bounds
+					return true
+				}
+			}
+			return false
+		})
+		w.Tester.RightClickAt(bounds.X+bounds.W/2, bounds.Y+bounds.H/2)
+		if err := w.Tester.ChooseMenuItem(support.Label("close")); err != nil {
+			t.Fatal(err)
+		}
+		w.Tester.Move(1, 1)
+		w.Await("closing a live terminal did not ask for confirmation", func() bool {
+			return w.Tester.HasText(support.Label("workspace_close_terminal"))
+		})
+	}
+	requestClose()
+	if err := w.Tester.Click(support.Label("settings_cancel")); err != nil {
+		t.Fatal(err)
+	}
+	w.Tester.Frame()
+	checkTerminalDirectory(w, panelTerminal, session.Worktree, detailPath)
+	requestClose()
+	if err := w.Tester.Click(support.Label("close")); err != nil {
+		t.Fatal(err)
+	}
+	w.Await("the confirmed close did not end the PTY and fold the last tab", func() bool {
+		for _, info := range w.Controller.Snapshot().Terminals {
+			if info.ID == panelTerminal && info.Status.Kind != "closed" {
+				return false
+			}
+		}
+		return !app.HasPanelTab(tab) && !app.PanelOpen
+	})
 }
 
 func checkTerminalDirectory(w *support.Window, id terminalprotocol.TerminalID, worktree protocol.WorktreeID, path string) {
