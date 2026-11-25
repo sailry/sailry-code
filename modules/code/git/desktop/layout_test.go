@@ -200,8 +200,8 @@ func testLayout(t *testing.T) {
 			tab       native.PanelTab
 			row, text string
 		}{
-			{native.PanelTab{Changes, "README.md"}, "README.md", "New text"},
-			{native.PanelTab{Files, "sailry-go/go.mod"}, "go.mod", "Code editor"},
+			{native.PanelTab{Kind: Changes, ID: "README.md"}, "README.md", "New text"},
+			{native.PanelTab{Kind: Files, ID: "sailry-go/go.mod"}, "go.mod", "Code editor"},
 		} {
 			tt.SetSize(560, height)
 			show(tt, s, o.tab)
@@ -240,7 +240,7 @@ func testLayout(t *testing.T) {
 		pr.Data.Changes = pr.Data.Changes[:1]
 		pr.view.nav.grouping, pr.view.nav.hierarchical = "none", false
 		tt.SetSize(560, height)
-		show(tt, s, native.PanelTab{Changes, pr.Data.Changes[0].Path})
+		show(tt, s, native.PanelTab{Kind: Changes, ID: pr.Data.Changes[0].Path})
 		tt.Advance(time.Second)
 		tt.Frame()
 		line, _ := grip(tt)
@@ -253,7 +253,7 @@ func testLayout(t *testing.T) {
 	t.Run("Threshold", func(t *testing.T) {
 		split, share := false, float32(0)
 		s, _, tt := viewTester(t, stackBelow-1, &split, &share)
-		show(tt, s, native.PanelTab{Changes, "README.md"})
+		show(tt, s, native.PanelTab{Kind: Changes, ID: "README.md"})
 		stacked := func(width int) bool {
 			tt.SetSize(width, height)
 			tt.Frame()
@@ -276,7 +276,7 @@ func testLayout(t *testing.T) {
 	t.Run("Divider", func(t *testing.T) {
 		split, share := false, float32(0)
 		s, _, tt := viewTester(t, 560, &split, &share)
-		show(tt, s, native.PanelTab{Files, "sailry-go/go.mod"})
+		show(tt, s, native.PanelTab{Kind: Files, ID: "sailry-go/go.mod"})
 		before, ok := grip(tt)
 		if !ok || share != ListShare {
 			t.Fatalf("no handle (%v), share %v", ok, share)
@@ -304,7 +304,7 @@ func testLayout(t *testing.T) {
 		}
 		// Another tab's list has the same share.
 		kept := share
-		show(tt, s, native.PanelTab{Changes, "README.md"})
+		show(tt, s, native.PanelTab{Kind: Changes, ID: "README.md"})
 		if at, _ := grip(tt); share != kept || at.Y+handle/2 > kept*height+1 {
 			t.Fatalf("Git's list is %v high with share %v, kept %v", at.Y+handle/2, share, kept)
 		}
@@ -315,7 +315,7 @@ func testLayout(t *testing.T) {
 	t.Run("NarrowSplit", func(t *testing.T) {
 		split, share := true, float32(0)
 		s, _, tt := viewTester(t, 560, &split, &share)
-		show(tt, s, native.PanelTab{Changes, "README.md"})
+		show(tt, s, native.PanelTab{Kind: Changes, ID: "README.md"})
 		all := toggles(tt)
 		if len(all) != 1 || !all[0].Disabled || all[0].Name != en("git_diff_side_by_side") || all[0].Description != en("git_diff_needs_width") {
 			t.Fatalf("the narrow panel's button: %+v", all)
@@ -431,19 +431,19 @@ func layoutShots(t *testing.T) {
 			tt.Advance(2 * time.Second)
 			tt.Frame()
 		}
-		s.Show(native.PanelTab{Changes, "internal/booking/reserve.go"})
+		s.Show(native.PanelTab{Kind: Changes, ID: "internal/booking/reserve.go"})
 		rest()
 		shot(t, tt, "git-stacked-560-"+name)
 		pr.view.view = 1
 		rest()
 		shot(t, tt, "git-history-stacked-560-"+name)
 		pr.view.view = 0
-		s.Show(native.PanelTab{Files, "harbor-api/internal/booking/reserve.go"})
+		s.Show(native.PanelTab{Kind: Files, ID: "harbor-api/internal/booking/reserve.go"})
 		rest()
 		shot(t, tt, "files-stacked-560-"+name)
 		split = true
 		tt.SetSize(900, 772)
-		s.Show(native.PanelTab{Changes, "internal/booking/reserve.go"})
+		s.Show(native.PanelTab{Kind: Changes, ID: "internal/booking/reserve.go"})
 		rest()
 		rest()
 		shot(t, tt, "git-side-900-split-"+name)
