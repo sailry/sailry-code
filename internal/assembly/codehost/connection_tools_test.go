@@ -1,4 +1,4 @@
-package node
+package codehost_test
 
 import (
 	"context"
@@ -8,42 +8,18 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"charm.land/fantasy"
 	codehost "github.com/sailry/sailry-code/internal/assembly/codehost"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
 	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"github.com/sailry/sailry-harness/sdk/native/process"
 	"github.com/sailry/sailry-harness/sdk/sdktest"
 	protocol "github.com/sailry/sailry-harness/sdk/sdktest/protocol"
 )
-
-// connectionHeldModel keeps its turn running until the test releases it, so
-// connection tools can be bound and called against a live captured turn.
-type connectionHeldModel struct {
-	fantasy.LanguageModel
-	once    sync.Once
-	started chan struct{}
-	release chan struct{}
-}
-
-func (held *connectionHeldModel) Stream(ctx context.Context, _ fantasy.Call) (fantasy.StreamResponse, error) {
-	held.once.Do(func() { close(held.started) })
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-held.release:
-	}
-	return func(yield func(fantasy.StreamPart) bool) {
-		if yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeTextDelta, ID: "answer", Delta: "Done"}) {
-			yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonStop})
-		}
-	}, nil
-}
 
 var connectionOperations = []protocol.ToolOperation{
 	protocol.ToolOperationListDatabaseConnections, protocol.ToolOperationSaveDatabaseConnection, protocol.ToolOperationBrowseDatabase,
@@ -51,104 +27,33 @@ var connectionOperations = []protocol.ToolOperation{
 	protocol.ToolOperationListSshConnections, protocol.ToolOperationSaveSshConnection, protocol.ToolOperationRunSsh, protocol.ToolOperationTransferSsh,
 }
 
-func connectionModelConfig(t *testing.T, node *Node) protocol.SessionConfig {
+func connectionModelConfig(t *testing.T, node *native.Node) protocol.SessionConfig {
 	t.Helper()
-	provider := protocol.DefaultConversationProvider()
-	provider.ID, provider.Revision, provider.Enabled, provider.Name = protocol.NewProviderID(), 1, true, "Fixture"
-	provider.Api, provider.Authentication = protocol.ConversationModelApiChatCompletions, protocol.AuthenticationApiKey
-	provider.Endpoint, provider.DefaultModel = "http://fixture.invalid/v1", "fixture"
-	selected := protocol.DefaultConversationModel()
-	selected.ID, selected.Context, selected.Output, selected.Tools = "fixture", 32000, 8000, true
-	provider.Models = []protocol.ConversationModel{selected}
-	ctx := t.Context()
-	if err := sdktest.Inspect(node).Store().Node.Write(ctx, func(db *sql.Conn) error {
-		body, err := json.Marshal(map[string]any{"id": provider.ID, "provider": provider, "listed": true, "authorizations": map[string]any{}, "quota": nil})
-		if err != nil {
-			return err
-		}
-		_, err = db.ExecContext(ctx, "INSERT INTO providers(id,body) VALUES(?1,?2)", provider.ID.String(), body)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	config := protocol.DefaultSessionConfig()
-	config.Provider, config.Model, config.Permission, config.Mode = provider.ID, "fixture", protocol.PermissionAsk, protocol.WorkModeCode
-	return config
+	return nodetest.SessionConfig(t, node, 32000, protocol.PermissionAsk)
 }
 
 func TestConnectionTools(t *testing.T) {
 	t.Parallel()
 	t.Run("detached", testDetachedConnectionTools)
-	t.Run("classification", func(t *testing.T) {
-		readOnly := []protocol.ToolOperation{protocol.ToolOperationListDatabaseConnections, protocol.ToolOperationListSshConnections,
-			protocol.ToolOperationBrowseDatabase, protocol.ToolOperationQueryDatabase}
-		for _, operation := range connectionOperations {
-			if !sdktest.ConnectionOperation(operation) {
-				t.Errorf("%s is not a connection operation", operation)
-			}
-			read, concurrent := sdktest.Policy(operation)
-			// Read-only connection operations may run together; writes stay ordered.
-			if read != slices.Contains(readOnly, operation) || concurrent != read {
-				t.Errorf("%s policy = read-only %v, concurrent %v", operation, read, concurrent)
-			}
-		}
-		if sdktest.ConnectionOperation(protocol.ToolOperationWriteFile) {
-			t.Error("a file operation was classified as a connection operation")
-		}
-	})
 
-	t.Run("arguments", func(t *testing.T) {
-		id := protocol.NewDatabaseID()
-		for _, entry := range []struct {
-			name      string
-			operation protocol.ToolOperation
-			arguments string
-			message   string
-		}{
-			{"list rejects fields", protocol.ToolOperationListSshConnections, `{"connection":"x"}`, "invalid connection operation: "},
-			{"query requires a limit", protocol.ToolOperationQueryDatabase, `{"connection":"` + id.String() + `","sql":"select 1","timeout_ms":1}`, "invalid connection operation: "},
-			{"query rejects unknown fields", protocol.ToolOperationQueryDatabase, `{"connection":"` + id.String() + `","sql":"select 1","row_limit":1,"timeout_ms":1,"password":"x"}`, "invalid connection operation: "},
-			{"target must be an identifier", protocol.ToolOperationRunSsh, `{"connection":"production","command":"uptime","timeout_ms":1}`, "invalid connection operation: "},
-			{"transfer direction", protocol.ToolOperationTransferSsh, `{"connection":"` + id.String() + `","path":"a","remote_path":"/a","direction":"sideways","timeout_ms":1}`, "invalid connection operation: "},
-			{"save rejects null edits", protocol.ToolOperationSaveDatabaseConnection, `{"name":null}`, "connection edit fields cannot be null"},
-			{"save rejects unknown credentials", protocol.ToolOperationSaveSshConnection, `{"credential":{"kind":"token"}}`, "invalid SSH credential"},
-			{"save rejects scalar credentials", protocol.ToolOperationSaveSshConnection, `{"credential":"secret"}`, "invalid SSH credential"},
-			{"other operations", protocol.ToolOperationWriteFile, `{}`, "native operation is unavailable"},
-		} {
-			_, err := sdktest.ConnectionCall(entry.operation, json.RawMessage(entry.arguments))
-			var fault *protocol.Fault
-			if !errors.As(err, &fault) || fault.Code != protocol.ErrorCodeInvalidRequest || !strings.HasPrefix(fault.Message, entry.message) {
-				t.Errorf("%s: error = %v", entry.name, err)
-			}
-		}
-		input, err := sdktest.ConnectionCall(protocol.ToolOperationSaveDatabaseConnection, json.RawMessage(`{"connection":null,"expected_revision":null,"name":"Local"}`))
-		if err != nil || string(input.Save) != `{"connection":null,"expected_revision":null,"name":"Local"}` || input.Target != nil {
-			t.Errorf("save arguments = %#v %v", input, err)
-		}
-		input, err = sdktest.ConnectionCall(protocol.ToolOperationBrowseDatabase, json.RawMessage(`{"connection":"`+id.String()+`","database":null}`))
-		if err != nil || input.Target == nil || input.Target.Kind != "database" || input.Target.Data != any(id) || input.Database != nil {
-			t.Errorf("catalog arguments = %#v %v", input, err)
-		}
-	})
-
-	held := &connectionHeldModel{started: make(chan struct{}), release: make(chan struct{})}
+	held := &nodetest.HeldModel{Started: make(chan struct{}), Release: make(chan struct{})}
 	environment := process.NewEnvironment([]string{"PATH=/usr/bin:/bin"})
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	node, err := StartWithOptions(context.Background(), filepath.Join(t.TempDir(), "profile"), Options{Assembly: codehost.Assembly(), MCP: sdktest.MCPOptions(), Environment: &environment, Model: func(context.Context, sdktest.Binding) (fantasy.LanguageModel, error) { return held, nil }})
+	node, err := native.StartWithOptions(context.Background(), filepath.Join(t.TempDir(), "profile"), native.Options{Assembly: codehost.Assembly(), MCP: sdktest.MCPOptions(), Environment: &environment, Model: func(context.Context, sdktest.Binding) (fantasy.LanguageModel, error) { return held, nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		close(held.release)
+		close(held.Release)
 		if err := node.Stop(context.Background()); err != nil {
 			t.Error(err)
 		}
 	})
 	ctx := t.Context()
-	project := commandFixture(t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{Name: "Fixture", Path: root, Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance()}}).Data.(protocol.Project)
+	project := nodetest.Command(t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{Name: "Fixture", Path: root, Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance()}}).Data.(protocol.Project)
 	config := connectionModelConfig(t, node)
 
 	const databasePassword, sshPassword = "fixture-database-password", "fixture-ssh-password"
@@ -158,9 +63,9 @@ func TestConnectionTools(t *testing.T) {
 	}
 	saveDatabase := func(name, host string, sharing *protocol.ConnectionSharing) protocol.DatabaseProfile {
 		password := protocol.NewSecret(databasePassword)
-		output := commandFixture(t, node, protocol.Command{Kind: "save_database", Data: protocol.CommandSaveDatabasePayload{
+		output := nodetest.Command(t, node, protocol.Command{Kind: "save_database", Data: protocol.CommandSaveDatabasePayload{
 			Profile: protocol.DatabaseProfile{ID: protocol.NewDatabaseID(), Name: name, Connection: network(host), ReadOnly: true, Sharing: sharing}, Password: &password}})
-		profile, valid := dispatchPayload[protocol.DatabaseProfile](output.Data)
+		profile, valid := nodetest.Payload[protocol.DatabaseProfile](output.Data)
 		if !valid {
 			t.Fatalf("saved database = %#v", output)
 		}
@@ -168,19 +73,19 @@ func TestConnectionTools(t *testing.T) {
 	}
 	shared := saveDatabase("Shared", "shared.fixture.test", &protocol.ConnectionSharing{Kind: "global"})
 	private := saveDatabase("Private", "private.fixture.test", nil)
-	output := commandFixture(t, node, protocol.Command{Kind: "save_ssh", Data: protocol.CommandSaveSshPayload{
+	output := nodetest.Command(t, node, protocol.Command{Kind: "save_ssh", Data: protocol.CommandSaveSshPayload{
 		Profile: protocol.SshProfile{ID: protocol.NewSshID(), Name: "Bastion", Host: "bastion.fixture.test", Port: 22, Username: "deploy",
 			Authentication: protocol.SshAuthenticationPassword, Sharing: &protocol.ConnectionSharing{Kind: "projects", Data: &[]protocol.ProjectID{project.ID}}},
 		Credential: &protocol.SshCredential{Kind: "password", Data: &protocol.SshCredentialPasswordPayload{Password: protocol.NewSecret(sshPassword)}}}})
-	bastion, valid := dispatchPayload[protocol.SshProfile](output.Data)
+	bastion, valid := nodetest.Payload[protocol.SshProfile](output.Data)
 	if !valid {
 		t.Fatalf("saved SSH connection = %#v", output)
 	}
 
-	session := commandFixture(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Project: &project.ID, Config: &config}}).Data.(protocol.Session)
-	commandFixture(t, node, protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{Session: session.ID, ExpectedRevision: session.Revision, Message: protocol.ConversationInput{Text: "Inspect the database"}}})
+	session := nodetest.Command(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Project: &project.ID, Config: &config}}).Data.(protocol.Session)
+	nodetest.Command(t, node, protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{Session: session.ID, ExpectedRevision: session.Revision, Message: protocol.ConversationInput{Text: "Inspect the database"}}})
 	select {
-	case <-held.started:
+	case <-held.Started:
 	case <-time.After(time.Minute):
 		t.Fatal("the held turn never reached its model")
 	}
@@ -200,13 +105,13 @@ func TestConnectionTools(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	installPluginFixture(t, node, "skill-fixture", map[string]string{
+	nodetest.InstallPlugin(t, node, "skill-fixture", map[string]string{
 		"plugin.json": `{"$schema":"` + sdktest.ManifestSchema + `","name":"skill-fixture","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","scope":"host"}}}`,
 	})
 	bound := config
 	bound.Resource = &protocol.ConnectionResource{Kind: "database", Data: shared.ID}
-	connection := commandFixture(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &bound}}).Data.(protocol.Session)
-	detached := commandFixture(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &config}}).Data.(protocol.Session)
+	connection := nodetest.Command(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &bound}}).Data.(protocol.Session)
+	detached := nodetest.Command(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &config}}).Data.(protocol.Session)
 	if len(session.Roles.Profiles) < 2 {
 		t.Fatalf("session roster = %+v", session.Roles)
 	}
@@ -255,7 +160,7 @@ func TestConnectionTools(t *testing.T) {
 			return count
 		}
 		before := turns()
-		response := dispatchFixture(t, node, node.ID(), protocol.NewRequest(node.ID(), protocol.Command{Kind: "queue_turn", Data: protocol.CommandQueueTurnPayload{
+		response := nodetest.Dispatch(t, node, node.ID(), protocol.NewRequest(node.ID(), protocol.Command{Kind: "queue_turn", Data: protocol.CommandQueueTurnPayload{
 			Session: rejected.session.ID, ExpectedRevision: rejected.session.Revision, Message: protocol.ConversationInput{Text: "Use this", References: rejected.references},
 		}}))
 		if response.Fault == nil || response.Fault.Code != rejected.code || response.Fault.Message != rejected.message || turns() != before {
@@ -298,27 +203,9 @@ func TestConnectionTools(t *testing.T) {
 	inv.Turn.ID, inv.Turn.Session, inv.Turn.Config = inv.Run.Turn, inv.Session.ID, inv.Session.Config
 	bind := func(t *testing.T, inv *native.AgentInvocation) map[protocol.ToolOperation]native.Tool {
 		t.Helper()
-		tools, err := sdktest.Inspect(node).ModuleTools(ctx, inv)
-		if err != nil {
-			t.Fatal(err)
-		}
-		bound := map[protocol.ToolOperation]native.Tool{}
-		for _, tool := range tools {
-			if tool.Binding == nil || tool.Binding.Operation == nil || !sdktest.ConnectionOperation(*tool.Binding.Operation) {
-				continue
-			}
-			bound[*tool.Binding.Operation] = tool
-		}
-		return bound
+		return nodetest.ConnectionTools(t, node, inv)
 	}
-	declarations := map[protocol.ToolOperation]sdktest.Declaration{}
-	for op, tool := range bind(t, inv) {
-		readOnly, concurrent := sdktest.Policy(op)
-		declarations[op] = sdktest.Declaration{
-			Spec: sdktest.Spec{Operation: op, ReadOnly: readOnly, Concurrent: concurrent},
-			Name: tool.Definition.Name,
-		}
-	}
+	declarations := nodetest.ConnectionDeclarations(bind(t, inv))
 	if len(declarations) != len(connectionOperations) {
 		t.Fatalf("captured connection declarations = %d", len(declarations))
 	}
@@ -362,73 +249,6 @@ func TestConnectionTools(t *testing.T) {
 		sdktest.Inspect(node).SwapAssembly(savedAssembly)
 		if err != nil || len(tools) != 0 {
 			t.Errorf("an un-assembled Node bound %d connection tools, err=%v", len(tools), err)
-		}
-	})
-
-	t.Run("commands", func(t *testing.T) {
-		database := "reports"
-		for _, entry := range []struct {
-			operation protocol.ToolOperation
-			arguments map[string]any
-			command   protocol.Command
-		}{
-			{protocol.ToolOperationListDatabaseConnections, map[string]any{}, protocol.Command{Kind: "list_databases"}},
-			{protocol.ToolOperationListSshConnections, map[string]any{}, protocol.Command{Kind: "list_ssh"}},
-			{protocol.ToolOperationBrowseDatabase, map[string]any{"connection": shared.ID, "database": database},
-				protocol.Command{Kind: "browse_database", Data: &protocol.CommandBrowseDatabasePayload{Profile: shared.ID, ExpectedRevision: shared.Revision, Database: &database}}},
-			{protocol.ToolOperationQueryDatabase, map[string]any{"connection": shared.ID, "sql": "select 1", "row_limit": 1000, "timeout_ms": 30000},
-				protocol.Command{Kind: "query_database", Data: &protocol.CommandQueryDatabasePayload{ReadOnly: true, Profile: shared.ID, ExpectedRevision: shared.Revision, Sql: "select 1", RowLimit: 1000, TimeoutMs: 30000}}},
-			{protocol.ToolOperationExecuteDatabase, map[string]any{"connection": shared.ID, "database": database, "sql": "delete from logs", "row_limit": 10, "timeout_ms": 5000},
-				protocol.Command{Kind: "query_database", Data: &protocol.CommandQueryDatabasePayload{Database: &database, Profile: shared.ID, ExpectedRevision: shared.Revision, Sql: "delete from logs", RowLimit: 10, TimeoutMs: 5000}}},
-			{protocol.ToolOperationRunSsh, map[string]any{"connection": bastion.ID, "command": "uptime", "timeout_ms": 120000},
-				protocol.Command{Kind: "run_ssh", Data: &protocol.CommandRunSshPayload{Profile: bastion.ID, ExpectedRevision: bastion.Revision, Command: "uptime", TimeoutMs: 120000}}},
-			{protocol.ToolOperationTransferSsh, map[string]any{"connection": bastion.ID, "path": "build.tar", "remote_path": "/tmp/build.tar", "direction": "upload", "timeout_ms": 120000},
-				protocol.Command{Kind: "transfer_ssh", Data: &protocol.CommandTransferSshPayload{Profile: bastion.ID, ExpectedRevision: bastion.Revision, TimeoutMs: 120000,
-					Transfer: protocol.SshTransfer{Worktree: inv.Run.Worktree, Path: "build.tar", RemotePath: "/tmp/build.tar", Direction: protocol.SshDirectionUpload}}}},
-		} {
-			arguments, err := json.Marshal(entry.arguments)
-			if err != nil {
-				t.Fatal(err)
-			}
-			command, err := sdktest.Inspect(node).ConnectionCommand(ctx, inv, declarations[entry.operation], arguments, captured)
-			if err != nil || !reflect.DeepEqual(command, entry.command) {
-				t.Errorf("%s command = %#v %v", entry.operation, command, err)
-			}
-		}
-	})
-
-	t.Run("sharing", func(t *testing.T) {
-		for _, entry := range []struct {
-			name      string
-			operation protocol.ToolOperation
-			arguments map[string]any
-			captured  []protocol.ConnectionResource
-		}{
-			{"unshared database", protocol.ToolOperationQueryDatabase, map[string]any{"connection": private.ID, "sql": "select 1", "row_limit": 1, "timeout_ms": 1000}, captured},
-			{"unshared database named as captured", protocol.ToolOperationQueryDatabase, map[string]any{"connection": private.ID, "sql": "select 1", "row_limit": 1, "timeout_ms": 1000},
-				append(slices.Clone(captured), protocol.ConnectionResource{Kind: "database", Data: private.ID})},
-			{"shared database outside the capture", protocol.ToolOperationBrowseDatabase, map[string]any{"connection": shared.ID}, nil},
-			{"unknown SSH connection", protocol.ToolOperationRunSsh, map[string]any{"connection": protocol.NewSshID(), "command": "uptime", "timeout_ms": 1000}, captured},
-		} {
-			arguments, err := json.Marshal(entry.arguments)
-			if err != nil {
-				t.Fatal(err)
-			}
-			command, err := sdktest.Inspect(node).ConnectionCommand(ctx, inv, declarations[entry.operation], arguments, entry.captured)
-			var fault *protocol.Fault
-			if !errors.As(err, &fault) || fault.Code != protocol.ErrorCodePermissionDenied {
-				t.Errorf("%s: command = %#v, error = %v", entry.name, command, err)
-			}
-		}
-		tool := bind(t, inv)[protocol.ToolOperationQueryDatabase]
-		arguments, _ := json.Marshal(map[string]any{"connection": private.ID, "sql": "select 1"})
-		err := tool.Prepare(ctx, native.ToolRequest{ID: "refused", Name: tool.Definition.Name, Arguments: arguments})
-		var fault *protocol.Fault
-		if !errors.As(err, &fault) || fault.Code != protocol.ErrorCodeInvalidRequest {
-			t.Errorf("prepared an unshared connection: %v", err)
-		}
-		if result := tool.Execute(ctx, native.ToolRequest{ID: "refused", Name: tool.Definition.Name, Arguments: arguments}); result.Failure == nil {
-			t.Error("executed a call that was never prepared")
 		}
 	})
 
@@ -480,21 +300,8 @@ func TestConnectionTools(t *testing.T) {
 		}
 
 		owner := declarations[protocol.ToolOperationListDatabaseConnections].Owner
-		value, err := sdktest.Inspect(node).ConnectionResult(ctx, inv, owner, protocol.Output{Kind: "database_profiles", Data: []protocol.DatabaseProfile{private, shared}}, captured)
-		if text := encode(value); err != nil || strings.Contains(text, private.ID.String()) || !strings.Contains(text, shared.ID.String()) {
-			t.Errorf("filtered list = %s %v", text, err)
-		}
-		value, err = sdktest.Inspect(node).ConnectionResult(ctx, inv, owner, protocol.Output{Kind: "database_profile", Data: shared}, captured)
-		if text := encode(value); err != nil || !strings.Contains(text, `"credentials_required":false`) || !strings.Contains(text, `"kind":"database_profile"`) {
-			t.Errorf("saved profile = %s %v", text, err)
-		}
-		_, err = sdktest.Inspect(node).ConnectionResult(ctx, inv, owner, protocol.Output{Kind: "database_profile", Data: private}, captured)
-		var fault *protocol.Fault
-		if !errors.As(err, &fault) || fault.Code != protocol.ErrorCodePermissionDenied {
-			t.Errorf("unreachable saved profile: %v", err)
-		}
 		outcome := protocol.Output{Kind: "ssh_outcome", Data: protocol.SshOutcome{Kind: "connected"}}
-		if value, err = sdktest.Inspect(node).ConnectionResult(ctx, inv, owner, outcome, captured); err != nil || !reflect.DeepEqual(value, outcome) {
+		if value, err := sdktest.Inspect(node).ConnectionResult(ctx, inv, owner, outcome, captured); err != nil || !reflect.DeepEqual(value, outcome) {
 			t.Errorf("effect outcome = %#v %v", value, err)
 		}
 
@@ -505,6 +312,4 @@ func TestConnectionTools(t *testing.T) {
 			t.Errorf("turn input = %s %v", text, err)
 		}
 	})
-	t.Run("SSH primary", func(t *testing.T) { testSSHPrimary(t, node, session, bastion, declarations) })
-	t.Run("database save proof", func(t *testing.T) { testDatabaseSaveProof(t, node, inv, declarations) })
 }

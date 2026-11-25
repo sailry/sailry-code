@@ -1,10 +1,12 @@
-package node
+package codehost_test
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
+	filesnode "github.com/sailry/sailry-harness/modules/files/node"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -25,9 +27,6 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 	t.Parallel()
 	t.Run("official assembly catalog and retired code package", func(t *testing.T) {
 		assembly := codehost.Assembly()
-		if assembly.CodeIndex == nil {
-			t.Fatal("official host assembly omitted CodeIndex")
-		}
 		ids := make([]string, 0, len(assembly.Modules))
 		totalTools := 0
 		for _, m := range assembly.Modules {
@@ -93,7 +92,7 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		}
 		env := process.NewEnvironment([]string{"PATH=/usr/bin:/bin"})
 		profileDir := filepath.Join(t.TempDir(), "profile")
-		n, err := StartWithOptions(t.Context(), profileDir, Options{
+		n, err := native.StartWithOptions(t.Context(), profileDir, native.Options{
 			Assembly:    codehost.Assembly(),
 			Environment: &env,
 			Model: func(context.Context, sdktest.Binding) (fantasy.LanguageModel, error) {
@@ -105,16 +104,16 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		}
 		defer n.Stop(context.Background())
 
-		installed := commandFixture(t, n, protocol.Command{Kind: "list_plugins"}).Data.([]protocol.PluginSummary)
+		installed := nodetest.Command(t, n, protocol.Command{Kind: "list_plugins"}).Data.([]protocol.PluginSummary)
 		if len(installed) != 0 {
 			t.Fatalf("Code preinstalled packages: %+v", installed)
 		}
-		snap := snapshotFixture(t, n)
+		snap := nodetest.Snapshot(t, n)
 		if !slices.ContainsFunc(snap.NativeSkills, func(s protocol.NativeSkill) bool { return s.Package == "web-search" && s.Skill.Name == "research" }) {
 			t.Fatalf("native web-search:research skill missing from snapshot: %+v", snap.NativeSkills)
 		}
 		// Native skill document reads serve the embedded SKILL.md via read_skill_document.
-		skillDoc := commandFixture(t, n, protocol.Command{
+		skillDoc := nodetest.Command(t, n, protocol.Command{
 			Kind: "read_skill_document",
 			Data: protocol.CommandReadSkillDocumentPayload{
 				Source: protocol.PluginSkillsDocumentSource{
@@ -137,36 +136,36 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		if _, err := n.Dispatch(t.Context(), remoteCaller, spoofReq); !errors.As(err, &spoofFault) || spoofFault.Code != protocol.ErrorCodePermissionDenied {
 			t.Fatalf("remote caller spoofing NativeMemoryReference got err = %v, want permission_denied", err)
 		}
-		compCfg := commandFixture(t, n, protocol.Command{Kind: "read_computer_settings"}).Data.(protocol.ComputerSettings)
+		compCfg := nodetest.Command(t, n, protocol.Command{Kind: "read_computer_settings"}).Data.(protocol.ComputerSettings)
 		if compCfg.Enabled {
 			t.Fatalf("native computer should default disabled: %+v", compCfg)
 		}
-		savedComp := commandFixture(t, n, protocol.Command{Kind: "save_computer_settings", Data: protocol.ComputerSettings{Revision: compCfg.Revision, Enabled: true}}).Data.(protocol.ComputerSettings)
+		savedComp := nodetest.Command(t, n, protocol.Command{Kind: "save_computer_settings", Data: protocol.ComputerSettings{Revision: compCfg.Revision, Enabled: true}}).Data.(protocol.ComputerSettings)
 		if !savedComp.Enabled || savedComp.Revision <= compCfg.Revision {
 			t.Fatalf("save_computer_settings failed: %+v", savedComp)
 		}
-		commandFixture(t, n, protocol.Command{Kind: "save_computer_settings", Data: protocol.ComputerSettings{Revision: savedComp.Revision, Enabled: false}})
+		nodetest.Command(t, n, protocol.Command{Kind: "save_computer_settings", Data: protocol.ComputerSettings{Revision: savedComp.Revision, Enabled: false}})
 
-		extCfg := commandFixture(t, n, protocol.Command{Kind: "read_external_browser_settings"}).Data.(protocol.ExternalBrowserSettings)
+		extCfg := nodetest.Command(t, n, protocol.Command{Kind: "read_external_browser_settings"}).Data.(protocol.ExternalBrowserSettings)
 		if extCfg.Enabled {
 			t.Fatalf("native external browser should default disabled: %+v", extCfg)
 		}
-		savedExt := commandFixture(t, n, protocol.Command{Kind: "save_external_browser_settings", Data: protocol.ExternalBrowserSettings{Revision: extCfg.Revision, Enabled: true}}).Data.(protocol.ExternalBrowserSettings)
+		savedExt := nodetest.Command(t, n, protocol.Command{Kind: "save_external_browser_settings", Data: protocol.ExternalBrowserSettings{Revision: extCfg.Revision, Enabled: true}}).Data.(protocol.ExternalBrowserSettings)
 		if !savedExt.Enabled || savedExt.Revision <= extCfg.Revision {
 			t.Fatalf("save_external_browser_settings failed: %+v", savedExt)
 		}
-		commandFixture(t, n, protocol.Command{Kind: "save_external_browser_settings", Data: protocol.ExternalBrowserSettings{Revision: savedExt.Revision, Enabled: false}})
+		nodetest.Command(t, n, protocol.Command{Kind: "save_external_browser_settings", Data: protocol.ExternalBrowserSettings{Revision: savedExt.Revision, Enabled: false}})
 
-		memEntry := commandFixture(t, n, protocol.Command{Kind: "save_memory_entry", Data: protocol.CommandSaveMemoryEntryPayload{
+		memEntry := nodetest.Command(t, n, protocol.Command{Kind: "save_memory_entry", Data: protocol.CommandSaveMemoryEntryPayload{
 			Title: "Native note", Kind: "user", Body: "Saved directly via native module command",
 		}}).Data.(protocol.MemoryEntry)
 		if memEntry.Summary.ID == "" || memEntry.Body != "Saved directly via native module command" {
 			t.Fatalf("save_memory_entry returned unexpected entry: %+v", memEntry)
 		}
-		if afterMemSnap := snapshotFixture(t, n); afterMemSnap.MemoryRevision == 0 {
+		if afterMemSnap := nodetest.Snapshot(t, n); afterMemSnap.MemoryRevision == 0 {
 			t.Fatalf("Snapshot.MemoryRevision stayed 0 after save_memory_entry")
 		}
-		memCat := commandFixture(t, n, protocol.Command{Kind: "read_memory_catalog", Data: protocol.CommandReadMemoryCatalogPayload{View: "active"}}).Data.(protocol.MemoryCatalog)
+		memCat := nodetest.Command(t, n, protocol.Command{Kind: "read_memory_catalog", Data: protocol.CommandReadMemoryCatalogPayload{View: "active"}}).Data.(protocol.MemoryCatalog)
 		if !slices.ContainsFunc(memCat.Entries, func(e protocol.MemorySummary) bool { return e.ID == memEntry.Summary.ID }) {
 			t.Fatalf("read_memory_catalog missing saved entry: %+v", memCat.Entries)
 		}
@@ -181,10 +180,10 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 
 		// Disable explicitly installed files and git UI fixtures: native modules must keep serving tools.
 		for _, pkg := range []string{"files", "git"} {
-			info := installPluginFixture(t, n, pkg, map[string]string{
+			info := nodetest.InstallPlugin(t, n, pkg, map[string]string{
 				"plugin.json": `{"$schema":"` + sdktest.ManifestSchema + `","name":"` + pkg + `","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","requires_modules":["` + pkg + `"]}}}`,
 			})
-			commandFixture(t, n, protocol.Command{Kind: "set_plugin_enabled", Data: protocol.CommandSetPluginEnabledPayload{
+			nodetest.Command(t, n, protocol.Command{Kind: "set_plugin_enabled", Data: protocol.CommandSetPluginEnabledPayload{
 				Name: pkg, ExpectedRevision: info.Summary.Revision, Enabled: false,
 			}})
 		}
@@ -196,7 +195,7 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		m := protocol.DefaultConversationModel()
 		m.ID, m.Context, m.Output, m.Tools, m.CustomCapabilities = "worker", 32000, 8000, true, true
 		provider.Models = []protocol.ConversationModel{m}
-		commandFixture(t, n, protocol.Command{Kind: "save_provider", Data: protocol.CommandSaveProviderPayload{Provider: provider, Secret: &secret}})
+		nodetest.Command(t, n, protocol.Command{Kind: "save_provider", Data: protocol.CommandSaveProviderPayload{Provider: provider, Secret: &secret}})
 
 		root, err := filepath.EvalSymlinks(t.TempDir())
 		if err != nil {
@@ -208,12 +207,12 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		if err := writeFixtureFile(filepath.Join(root, "second.txt"), "legacy alias content\n"); err != nil {
 			t.Fatal(err)
 		}
-		project := commandFixture(t, n, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
+		project := nodetest.Command(t, n, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
 			Name: "Modules", Path: root, Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance(),
 		}}).Data.(protocol.Project)
 		cfg := protocol.DefaultSessionConfig()
 		cfg.Provider, cfg.Model, cfg.Mode, cfg.Permission = provider.ID, "worker", protocol.WorkModeCode, protocol.PermissionFull
-		session := commandFixture(t, n, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{
+		session := nodetest.Command(t, n, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{
 			Project: &project.ID, Config: &cfg,
 		}}).Data.(protocol.Session)
 
@@ -222,7 +221,7 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer changes.Close()
-		commandFixture(t, n, protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{
+		nodetest.Command(t, n, protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{
 			Session: session.ID, ExpectedRevision: session.Revision, Message: protocol.ConversationInput{Text: "Inspect workspace"},
 		}})
 		deadline := time.Now().Add(30 * time.Second)
@@ -287,7 +286,7 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		if !strings.Contains(results["mem-update"], `"revision":2`) {
 			t.Fatalf("save_memory update (requires BeforeModel read authority) = %q", results["mem-update"])
 		}
-		commandFixture(t, n, protocol.Command{Kind: "delete_memory_entry", Data: protocol.CommandDeleteMemoryEntryPayload{ID: memEntry.Summary.ID, ExpectedRevision: 2}})
+		nodetest.Command(t, n, protocol.Command{Kind: "delete_memory_entry", Data: protocol.CommandDeleteMemoryEntryPayload{ID: memEntry.Summary.ID, ExpectedRevision: 2}})
 
 		// Canonical history carries native tool names and localized presentations.
 		var state sdktest.AgentState
@@ -327,7 +326,7 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		}
 		env := process.NewEnvironment([]string{"PATH=/usr/bin:/bin"})
 		profileDir := filepath.Join(t.TempDir(), "profile")
-		prepared, err := StartWithOptions(t.Context(), profileDir, Options{Assembly: codehost.Assembly(), Environment: &env})
+		prepared, err := native.StartWithOptions(t.Context(), profileDir, native.Options{Assembly: codehost.Assembly(), Environment: &env})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -337,38 +336,38 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		settings := map[string]map[string]any{}
 		const content = "---\nname: retained-fixture\ndescription: Preserve explicitly installed package content.\n---\nKeep this local fixture across restarts.\n"
 		for _, pkg := range []string{"git", "databases", "ssh"} {
-			info := installPluginFixture(t, prepared, pkg, map[string]string{
+			info := nodetest.InstallPlugin(t, prepared, pkg, map[string]string{
 				"plugin.json":                       `{"$schema":"` + sdktest.ManifestSchema + `","name":"` + pkg + `","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","requires_modules":["` + pkg + `"],"settings_schema":"dev.sailry.platform/settings.json","settings_page":{"navigation":{"label":"Settings"}}}}}`,
 				"dev.sailry.platform/settings.json": `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"label":{"type":"string"}},"additionalProperties":false}`,
 				"skills/retained-fixture/SKILL.md":  content,
 			})
 			value := "saved " + pkg + " setting"
-			saved := acceptanceDo[struct {
+			saved := nodetest.Do[struct {
 				Values map[string]string `json:"values"`
-			}](t, prepared, decodeCommandFixture(t, "save_plugin_settings", map[string]any{
+			}](t, prepared, nodetest.DecodeCommand(t, "save_plugin_settings", map[string]any{
 				"package": sdktest.PackageReference(info), "values": map[string]string{"label": value}, "secrets": map[string]any{},
 			}))
 			if saved.Values["label"] != value {
 				t.Fatalf("%s setting was not saved: %+v", pkg, saved)
 			}
-			info = commandFixture(t, prepared, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: pkg}}).Data.(protocol.PluginInfo)
-			commandFixture(t, prepared, protocol.Command{Kind: "set_plugin_enabled", Data: protocol.CommandSetPluginEnabledPayload{
+			info = nodetest.Command(t, prepared, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: pkg}}).Data.(protocol.PluginInfo)
+			nodetest.Command(t, prepared, protocol.Command{Kind: "set_plugin_enabled", Data: protocol.CommandSetPluginEnabledPayload{
 				Name: pkg, ExpectedRevision: info.Summary.Revision, Enabled: false,
 			}})
-			before[pkg] = commandFixture(t, prepared, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: pkg}}).Data.(protocol.PluginInfo)
-			settings[pkg] = acceptanceDo[map[string]any](t, prepared, decodeCommandFixture(t, "read_plugin_settings", map[string]any{
+			before[pkg] = nodetest.Command(t, prepared, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: pkg}}).Data.(protocol.PluginInfo)
+			settings[pkg] = nodetest.Do[map[string]any](t, prepared, nodetest.DecodeCommand(t, "read_plugin_settings", map[string]any{
 				"package": sdktest.PackageReference(before[pkg]),
 			}))
 		}
-		verifyRetained := func(owner *Node, haveModules bool) {
+		verifyRetained := func(owner *native.Node, haveModules bool) {
 			t.Helper()
 			for pkg, original := range before {
-				info := commandFixture(t, owner, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: pkg}}).Data.(protocol.PluginInfo)
+				info := nodetest.Command(t, owner, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: pkg}}).Data.(protocol.PluginInfo)
 				if info.Summary.Enabled || info.Summary.Revision != original.Summary.Revision || info.Summary.Digest != original.Summary.Digest || !reflect.DeepEqual(info.Summary.Version, original.Summary.Version) {
 					t.Fatalf("restart changed disabled %s package: %+v, want %+v", pkg, info.Summary, original.Summary)
 				}
 				reference := sdktest.PackageReference(info)
-				state, failure := acceptanceCall[map[string]any](t, owner, decodeCommandFixture(t, "read_plugin_settings", map[string]any{"package": reference}))
+				state, failure := nodetest.Call[map[string]any](t, owner, nodetest.DecodeCommand(t, "read_plugin_settings", map[string]any{"package": reference}))
 				if haveModules {
 					if failure != nil {
 						t.Fatal(failure)
@@ -377,9 +376,9 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 						t.Fatalf("restart changed %s settings: %+v, want %+v", pkg, state, settings[pkg])
 					}
 				} else {
-					acceptanceFault(t, pkg+" settings without its module", failure, protocol.ErrorCodeNotConfigured, "plugin version is incompatible")
+					nodetest.RequireFault(t, pkg+" settings without its module", failure, protocol.ErrorCodeNotConfigured, "plugin version is incompatible")
 				}
-				document := acceptanceDo[protocol.PluginSkillsDocument](t, owner, decodeCommandFixture(t, "read_skill_document", map[string]any{
+				document := nodetest.Do[protocol.PluginSkillsDocument](t, owner, nodetest.DecodeCommand(t, "read_skill_document", map[string]any{
 					"source": map[string]any{"kind": "installed", "data": map[string]any{"package": reference, "skill": "retained-fixture"}},
 				}))
 				if document.Content != content {
@@ -392,8 +391,8 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		n, err := StartWithOptions(t.Context(), profileDir, Options{
-			Assembly:    filesAssembly(),
+		n, err := native.StartWithOptions(t.Context(), profileDir, native.Options{
+			Assembly:    native.Assembly{Modules: []native.Module{filesnode.Module()}, BundledDefaults: []native.DefaultPlugin{}},
 			Environment: &env,
 			Model:       func(context.Context, sdktest.Binding) (fantasy.LanguageModel, error) { return script, nil },
 		})
@@ -410,14 +409,14 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		m := protocol.DefaultConversationModel()
 		m.ID, m.Context, m.Output, m.Tools, m.CustomCapabilities = "worker", 32000, 8000, true, true
 		provider.Models = []protocol.ConversationModel{m}
-		commandFixture(t, n, protocol.Command{Kind: "save_provider", Data: protocol.CommandSaveProviderPayload{Provider: provider, Secret: &secret}})
+		nodetest.Command(t, n, protocol.Command{Kind: "save_provider", Data: protocol.CommandSaveProviderPayload{Provider: provider, Secret: &secret}})
 		root, _ := filepath.EvalSymlinks(t.TempDir())
-		project := commandFixture(t, n, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
+		project := nodetest.Command(t, n, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
 			Name: "Omission", Path: root, Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance(),
 		}}).Data.(protocol.Project)
 		cfg := protocol.DefaultSessionConfig()
 		cfg.Provider, cfg.Model, cfg.Mode, cfg.Permission = provider.ID, "worker", protocol.WorkModeCode, protocol.PermissionFull
-		session := commandFixture(t, n, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{
+		session := nodetest.Command(t, n, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{
 			Project: &project.ID, Config: &cfg,
 		}}).Data.(protocol.Session)
 		changes, err := n.Subscribe(t.Context(), n.ID(), protocol.Topic{Kind: "node"})
@@ -425,7 +424,7 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer changes.Close()
-		commandFixture(t, n, protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{
+		nodetest.Command(t, n, protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{
 			Session: session.ID, ExpectedRevision: session.Revision, Message: protocol.ConversationInput{Text: "Check tools"},
 		}})
 		for completed := false; !completed; {
@@ -459,7 +458,7 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		if err := n.Stop(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		restored, err := StartWithOptions(t.Context(), profileDir, Options{Assembly: codehost.Assembly(), Environment: &env})
+		restored, err := native.StartWithOptions(t.Context(), profileDir, native.Options{Assembly: codehost.Assembly(), Environment: &env})
 		if err != nil {
 			t.Fatal(err)
 		}

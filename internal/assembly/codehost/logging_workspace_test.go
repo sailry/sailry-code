@@ -1,10 +1,13 @@
-package node
+package codehost_test
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
+	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/getsentry/sentry-go"
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/sailry/sailry-code/internal/assembly/codehost"
 	"github.com/sailry/sailry-harness/sdk/native/process"
@@ -43,10 +47,10 @@ func TestWorkspaceReadCommandDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(closeLog)
-	server := newDiagnosticSentryFixture(t)
+	server := nodetest.NewSentry(t)
 	const localCause = "private Git process failure"
 	var inspected atomic.Bool
-	node, err := StartWithOptions(t.Context(), profile, Options{
+	node, err := native.StartWithOptions(t.Context(), profile, native.Options{
 		Assembly:    codehost.Assembly(),
 		Environment: new(process.NewEnvironment(nil)),
 		MCP:         sdktest.MCPOptions(),
@@ -61,7 +65,7 @@ func TestWorkspaceReadCommandDiagnostics(t *testing.T) {
 				return sdktest.GitCommandResult{}, fmt.Errorf("unexpected Git arguments: %v", args)
 			}
 		}},
-		Telemetry: sdktest.TelemetryOptions{Lookup: diagnosticEnvironment(map[string]string{"SAILRY_SENTRY_DSN": server.dsn()})},
+		Telemetry: server.Options(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -70,8 +74,9 @@ func TestWorkspaceReadCommandDiagnostics(t *testing.T) {
 	if !node.Telemetry().Errors() {
 		t.Fatal("fixture must allow automatic error reports")
 	}
-	project := commandFixture(t, node, protocol.Command{Kind: "register_project", Data: protocol.CommandRegisterProjectPayload{Name: "Workspace", Path: root}}).Data.(protocol.Project)
-	trees := snapshotFixture(t, node).Worktrees
+	const projectName = "private workspace name"
+	project := nodetest.Command(t, node, protocol.Command{Kind: "register_project", Data: protocol.CommandRegisterProjectPayload{Name: projectName, Path: root}}).Data.(protocol.Project)
+	trees := nodetest.Snapshot(t, node).Worktrees
 	index := slices.IndexFunc(trees, func(tree protocol.Worktree) bool { return tree.Project != nil && *tree.Project == project.ID })
 	if index < 0 {
 		t.Fatal("registered project has no worktree")
@@ -81,7 +86,7 @@ func TestWorkspaceReadCommandDiagnostics(t *testing.T) {
 		return protocol.Command{Kind: "list_directory", Data: protocol.CommandListDirectoryPayload{Worktree: tree, Path: path}}
 	}
 	success := protocol.NewRequest(node.ID(), directory("."))
-	if got := dispatchFixture(t, node, node.ID(), success); got.Fault != nil || got.Output.Kind != "directory" {
+	if got := nodetest.Dispatch(t, node, node.ID(), success); got.Fault != nil || got.Output.Kind != "directory" {
 		t.Fatalf("workspace root listing = %v", got)
 	}
 	type failure struct {
@@ -92,6 +97,7 @@ func TestWorkspaceReadCommandDiagnostics(t *testing.T) {
 		ref   string
 	}
 	var failures []failure
+	var inspectRef string
 	for _, test := range []struct {
 		command protocol.Command
 		level   string
@@ -102,15 +108,18 @@ func TestWorkspaceReadCommandDiagnostics(t *testing.T) {
 		{protocol.Command{Kind: "list_worktrees", Data: protocol.CommandListWorktreesPayload{Worktree: tree}}, "WARN", protocol.ErrorCodeNotConfigured},
 	} {
 		request := protocol.NewRequest(node.ID(), test.command)
-		fault := dispatchFixture(t, node, node.ID(), request).Fault
+		fault := nodetest.Dispatch(t, node, node.ID(), request).Fault
 		if fault == nil || fault.Code != test.code {
 			t.Fatalf("%s = %v, want %s", test.command.Kind, fault, test.code)
 		}
 		if !sdktest.ValidReportRef(fault.ReportRef) {
 			t.Fatalf("%s failure has no valid reference: %q", test.command.Kind, fault.ReportRef)
 		}
-		if test.command.Kind == "inspect_git" && fault.GitInspectionReason != protocol.GitInspectionStatusCommandFailed {
-			t.Fatalf("inspection fault lost its Git failure reason: %+v", fault)
+		if test.command.Kind == "inspect_git" {
+			if fault.GitInspectionReason != protocol.GitInspectionStatusCommandFailed {
+				t.Fatalf("inspection fault lost its Git failure reason: %+v", fault)
+			}
+			inspectRef = fault.ReportRef
 		}
 		failures = append(failures, failure{request.ID, test.command.Kind, test.level, test.code, fault.ReportRef})
 	}
@@ -118,21 +127,23 @@ func TestWorkspaceReadCommandDiagnostics(t *testing.T) {
 		t.Fatal("inspection did not reach native Git status")
 	}
 	const invalidPackage = "private package/name"
-	install := protocol.NewRequest(node.ID(), decodeCommandFixture(t, "install_plugin", map[string]any{
+	install := protocol.NewRequest(node.ID(), nodetest.DecodeCommand(t, "install_plugin", map[string]any{
 		"worktree": tree, "path": ".", "name": invalidPackage, "expected_revision": 0,
 	}))
 	admission, err := node.Dispatch(t.Context(), node.ID(), install)
 	if err != nil || !admission.Receipt.Durable {
 		t.Fatalf("fixture installation was not admitted durably: %v, %v", admission.Receipt, err)
 	}
-	if completion := <-admission.Completion; completion.Fault == nil || completion.Fault.Code != protocol.ErrorCodeInvalidRequest {
+	completion := <-admission.Completion
+	if completion.Fault == nil || completion.Fault.Code != protocol.ErrorCodeInvalidRequest {
 		t.Fatalf("invalid package did not fail after admission: %+v", completion)
+	}
+	installRef := completion.Fault.ReportRef
+	if !sdktest.ValidReportRef(installRef) {
+		t.Fatalf("installation failure has no valid reference: %q", installRef)
 	}
 	if err := node.Stop(t.Context()); err != nil {
 		t.Fatal(err)
-	}
-	if got := server.count(); got != 0 {
-		t.Errorf("controller workspace reads sent %d automatic reports", got)
 	}
 	path, err := sdktest.CurrentLogFile()
 	if err != nil {
@@ -173,8 +184,10 @@ func TestWorkspaceReadCommandDiagnostics(t *testing.T) {
 	for _, line := range lines {
 		if strings.Contains(line, " request="+install.ID.String()+" ") && strings.Contains(line, " phase=failed ") {
 			installFailures++
+			fields := strings.Fields(line)
 			if !strings.Contains(line, " WARN desktop area=command phase=failed ") ||
-				!strings.Contains(line, " command=install_plugin ") || !strings.Contains(line, " command_stage=completion code=invalid_request ") {
+				!slices.Contains(fields, "command=install_plugin") || !slices.Contains(fields, "command_stage=completion") ||
+				!slices.Contains(fields, "code=invalid_request") || !slices.Contains(fields, "report_ref="+installRef) {
 				t.Errorf("installation failure logged as %q", line)
 			}
 		}
@@ -186,17 +199,71 @@ func TestWorkspaceReadCommandDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, private := range []string{filepath.Base(root), entry, contents, missing, localCause, invalidPackage} {
-		if bytes.Contains(local, []byte(private)) || bytes.Contains(tail, []byte(private)) {
-			t.Errorf("diagnostics kept private value %q", private)
+	private := []string{filepath.Base(root), projectName, entry, contents, missing, localCause, invalidPackage}
+	for _, value := range private {
+		if bytes.Contains(local, []byte(value)) || bytes.Contains(tail, []byte(value)) {
+			t.Errorf("diagnostics kept private value %q", value)
 		}
 	}
-	if bytes.Contains(tail, []byte(tree.String())) || bytes.Contains(tail, []byte(success.ID.String())) {
-		t.Error("diagnostic attachment kept a local worktree or request identifier")
-	}
+	identifiers := []string{node.ID().String(), project.ID.String(), tree.String(), success.ID.String(), install.ID.String()}
 	for _, failure := range failures {
-		if bytes.Contains(tail, []byte(failure.id.String())) {
-			t.Errorf("diagnostic attachment kept request identifier %s", failure.id)
+		identifiers = append(identifiers, failure.id.String())
+	}
+	for _, id := range identifiers {
+		if bytes.Contains(tail, []byte(id)) {
+			t.Errorf("diagnostic attachment kept local identifier %s", id)
+		}
+	}
+	if bytes.Contains(tail, []byte(`"report_ref"`)) {
+		t.Error("diagnostic attachment kept a report reference")
+	}
+	assertWorkspaceReadSentryEvent(t, server, inspectRef, append(private, identifiers...))
+}
+
+func assertWorkspaceReadSentryEvent(t *testing.T, server *nodetest.SentryFixture, ref string, private []string) {
+	t.Helper()
+	bodies := server.Bodies()
+	if len(bodies) != 1 {
+		t.Fatalf("automatic reports = %d, want only the inspect_git failure", len(bodies))
+	}
+	body := bodies[0]
+	lines := bytes.SplitN(bytes.TrimSuffix(body, []byte("\n")), []byte("\n"), 4)
+	var item struct {
+		Type string `json:"type"`
+	}
+	var event sentry.Event
+	if len(lines) != 3 || json.Unmarshal(lines[1], &item) != nil || item.Type != "event" || json.Unmarshal(lines[2], &event) != nil {
+		t.Fatal("expected one Sentry event without attachments")
+	}
+	const message = "command.inspect_git:unavailable"
+	if event.Message != message || event.Level != sentry.LevelError {
+		t.Error("Sentry event does not describe an inspect_git error")
+	}
+	if len(event.Exception) != 1 || event.Exception[0].Type != "SailryError" || event.Exception[0].Value != message ||
+		event.Exception[0].Mechanism == nil || event.Exception[0].Mechanism.Handled == nil || !*event.Exception[0].Mechanism.Handled {
+		t.Error("Sentry event lacks the sanitized handled failure")
+	}
+	fields := event.Contexts["sailry"]
+	want := map[string]string{
+		"area": "command", "phase": "failed", "operation": "inspect_git", "code": "unavailable", "command_stage": "completion",
+		"report_ref": ref, "stage": "run_status", "reason": string(protocol.GitInspectionStatusCommandFailed),
+	}
+	for key, value := range want {
+		if fields[key] != value {
+			t.Errorf("inspect_git Sentry event has unexpected %s", key)
+		}
+	}
+	for key := range fields {
+		if _, ok := want[key]; !ok && key != "duration_us" {
+			t.Errorf("inspect_git Sentry event has unexpected field %q", key)
+		}
+	}
+	if event.Request != nil || !event.User.IsEmpty() || event.ServerName != "" {
+		t.Error("Sentry event kept request, user or host information")
+	}
+	for index, value := range private {
+		if bytes.Contains(body, []byte(value)) {
+			t.Errorf("Sentry envelope kept private canary %d", index)
 		}
 	}
 }

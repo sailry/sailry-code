@@ -1,10 +1,14 @@
-package node
+package sshnode_test
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
+	sshnode "github.com/sailry/sailry-code/modules/code/ssh/node"
+	sshfixture "github.com/sailry/sailry-code/modules/code/ssh/testsupport"
+	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,7 +17,6 @@ import (
 	"time"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/sailry/sailry-code/internal/assembly/codehost"
 	"github.com/sailry/sailry-harness/sdk/native/link"
 	"github.com/sailry/sailry-harness/sdk/native/process"
 	"github.com/sailry/sailry-harness/sdk/sdktest"
@@ -33,16 +36,13 @@ func TestSSHDispatchPrivacy(t *testing.T) {
 	}
 	t.Cleanup(closeLog)
 	t.Cleanup(sdktest.SetHostArtifactRoot(t.TempDir()))
-	peer := newSSHLogPeer(t)
-	server := newDiagnosticSentryFixture(t)
-	node, err := StartWithOptions(t.Context(), path, Options{
-		Assembly:    codehost.Assembly(),
+	peer := sshfixture.NewPeer(t)
+	server := nodetest.NewSentry(t)
+	node, err := native.StartWithOptions(t.Context(), path, native.Options{
+		Assembly:    native.Assembly{Modules: []native.Module{sshnode.Module()}},
 		Environment: new(process.NewEnvironment(nil)), MCP: sdktest.MCPOptions(),
-		Network: &sdktest.NetworkScope{Bind: "127.0.0.1:0"},
-		Telemetry: sdktest.TelemetryOptions{
-			Lookup:    diagnosticEnvironment(map[string]string{"SAILRY_SENTRY_DSN": server.dsn()}),
-			Transport: server.server.Client().Transport,
-		},
+		Network:   &sdktest.NetworkScope{Bind: "127.0.0.1:0"},
+		Telemetry: server.Options(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -113,12 +113,12 @@ func TestSSHDispatchPrivacy(t *testing.T) {
 		}
 	}
 	profile := protocol.SshProfile{
-		ID: protocol.NewSshID(), Name: sshLogName, Host: peer.address.IP.String(), Port: uint16(peer.address.Port),
-		Username: sshLogUser, Authentication: protocol.SshAuthenticationPassword,
+		ID: protocol.NewSshID(), Name: sshfixture.ProfileName, Host: peer.Address().Addr().String(), Port: peer.Address().Port(),
+		Username: sshfixture.User, Authentication: protocol.SshAuthenticationPassword,
 	}
-	credential := protocol.SshCredential{Kind: "password", Data: protocol.SshCredentialPasswordPayload{Password: protocol.NewSecret(sshLogPassword)}}
-	saved := commandFixture(t, node, protocol.Command{Kind: "save_ssh", Data: protocol.CommandSaveSshPayload{Profile: profile, Credential: &credential}})
-	profile, ok := dispatchPayload[protocol.SshProfile](saved.Data)
+	credential := protocol.SshCredential{Kind: "password", Data: protocol.SshCredentialPasswordPayload{Password: protocol.NewSecret(sshfixture.Password)}}
+	saved := nodetest.Command(t, node, protocol.Command{Kind: "save_ssh", Data: protocol.CommandSaveSshPayload{Profile: profile, Credential: &credential}})
+	profile, ok := nodetest.Payload[protocol.SshProfile](saved.Data)
 	if saved.Kind != "ssh_profile" || !ok {
 		t.Fatalf("save_ssh output = %s", saved.Kind)
 	}
@@ -140,23 +140,23 @@ func TestSSHDispatchPrivacy(t *testing.T) {
 
 	for _, request := range []protocol.Request{check(), install()} {
 		result := await(admit(ctx, request))
-		outcome, ok := dispatchPayload[protocol.SshOutcome](result.Output.Data)
-		required, keyOK := dispatchPayload[protocol.SshOutcomeHostKeyRequiredPayload](outcome.Data)
-		if result.Fault != nil || result.Output.Kind != "ssh_outcome" || !ok || outcome.Kind != "host_key_required" || !keyOK || required.Changed || required.Key != peer.key {
+		outcome, ok := nodetest.Payload[protocol.SshOutcome](result.Output.Data)
+		required, keyOK := nodetest.Payload[protocol.SshOutcomeHostKeyRequiredPayload](outcome.Data)
+		if result.Fault != nil || result.Output.Kind != "ssh_outcome" || !ok || outcome.Kind != "host_key_required" || !keyOK || required.Changed || required.Key != peer.HostKey() {
 			t.Fatalf("%s did not return the loopback host key for confirmation: %+v", request.Command.Kind, result)
 		}
 		outcomes = append(outcomes, sshLogOutcome{request: request, level: "INFO", fields: map[string]string{
 			"area": "command", "operation": request.Command.Kind, "phase": sdktest.LogCompleted,
 		}})
 	}
-	if peer.passwordSeen.Load() || peer.installerRuns.Load() != 0 {
+	if peer.PasswordSeen() || peer.InstallerRuns() != 0 {
 		t.Fatal("SSH used the unconfirmed host key")
 	}
-	confirmed := commandFixture(t, node, protocol.Command{Kind: "trust_ssh", Data: protocol.CommandTrustSshPayload{
-		Profile: profile.ID, ExpectedRevision: profile.Revision, Key: peer.key,
+	confirmed := nodetest.Command(t, node, protocol.Command{Kind: "trust_ssh", Data: protocol.CommandTrustSshPayload{
+		Profile: profile.ID, ExpectedRevision: profile.Revision, Key: peer.HostKey(),
 	}})
-	trusted, ok := dispatchPayload[protocol.SshProfile](confirmed.Data)
-	if confirmed.Kind != "ssh_profile" || !ok || trusted.Revision != profile.Revision+1 || trusted.HostKey == nil || *trusted.HostKey != peer.key {
+	trusted, ok := nodetest.Payload[protocol.SshProfile](confirmed.Data)
+	if confirmed.Kind != "ssh_profile" || !ok || trusted.Revision != profile.Revision+1 || trusted.HostKey == nil || *trusted.HostKey != peer.HostKey() {
 		t.Fatal("trust_ssh did not confirm the host key at a new revision")
 	}
 	profile = trusted
@@ -164,25 +164,25 @@ func TestSSHDispatchPrivacy(t *testing.T) {
 	authFault := await(admit(ctx, request)).Fault
 	failure(request, authFault, "completion", protocol.ErrorCodeUnavailable, protocol.SSHAuthFailed)
 	storedFailure(request, authFault, sdktest.RequestFailed)
-	if !peer.passwordSeen.Load() {
+	if !peer.PasswordSeen() {
 		t.Fatal("SSH fixture did not receive the password canary")
 	}
-	peer.allowPassword.Store(true)
+	peer.AllowPassword()
 
 	request = install()
-	pause := peer.pauseAt(sshLogPlatform)
+	pause := peer.PauseAt(sshfixture.PlatformCommand)
 	observer, cancelObserver := context.WithCancel(ctx)
 	defer cancelObserver()
 	admitted := admit(observer, request)
-	pause.wait(t, ctx)
+	pause.Wait(t, ctx)
 	cancelObserver()
-	close(pause.resume)
+	pause.Resume()
 	first := await(admitted).Fault
 	failure(request, first, "completion", protocol.ErrorCodeUnavailable, protocol.SSHCommandNonzeroExit)
 	storedFailure(request, first, sdktest.RequestFailed)
 	second := await(admit(ctx, request)).Fault
 	failure(request, second, "completion", protocol.ErrorCodeUnavailable, protocol.SSHCommandNonzeroExit)
-	if first.Message != "Host installation command failed" || second.Message != first.Message || second.ReportRef == first.ReportRef || peer.installerRuns.Load() != 1 {
+	if first.Message != "Host installation command failed" || second.Message != first.Message || second.ReportRef == first.ReportRef || peer.InstallerRuns() != 1 {
 		t.Fatal("installer failure changed or re-executed on replay")
 	}
 
@@ -193,18 +193,18 @@ func TestSSHDispatchPrivacy(t *testing.T) {
 		reason      protocol.SSHFailureReason
 		state       sdktest.RequestState
 	}{
-		{sshLogHandshake, check, protocol.ErrorCodeCancelled, "", sdktest.RequestFailed},
-		{sshLogPlatform, install, protocol.ErrorCodeCancelled, "", sdktest.RequestFailed},
-		{sshLogPaths, install, protocol.ErrorCodeCancelled, "", sdktest.RequestFailed},
-		{sshLogInstall, install, protocol.ErrorCodeOutcomeUnknown, protocol.SSHCommandInterrupted, sdktest.RequestUnknown},
+		{sshfixture.Handshake, check, protocol.ErrorCodeCancelled, "", sdktest.RequestFailed},
+		{sshfixture.PlatformCommand, install, protocol.ErrorCodeCancelled, "", sdktest.RequestFailed},
+		{sshfixture.PathsCommand, install, protocol.ErrorCodeCancelled, "", sdktest.RequestFailed},
+		{sshfixture.InstallCommand, install, protocol.ErrorCodeOutcomeUnknown, protocol.SSHCommandInterrupted, sdktest.RequestUnknown},
 	} {
-		pause := peer.pauseAt(test.stage)
+		pause := peer.PauseAt(test.stage)
 		request := test.makeRequest()
 		admitted := admit(ctx, request)
-		pause.wait(t, ctx)
+		pause.Wait(t, ctx)
 		cancel := newRequest("cancel_ssh", protocol.CommandCancelSshPayload{Request: request.ID})
 		cancelled := await(admit(ctx, cancel))
-		ack, ok := dispatchPayload[protocol.OutputSshCancelledPayload](cancelled.Output.Data)
+		ack, ok := nodetest.Payload[protocol.OutputSshCancelledPayload](cancelled.Output.Data)
 		if cancelled.Fault != nil || cancelled.Output.Kind != "ssh_cancelled" || !ok || ack.Request != request.ID {
 			t.Fatalf("cancel_ssh = %+v", cancelled)
 		}
@@ -213,11 +213,11 @@ func TestSSHDispatchPrivacy(t *testing.T) {
 		storedFailure(request, fault, test.state)
 	}
 
-	if peer.installerRuns.Load() != 2 {
+	if peer.InstallerRuns() != 2 {
 		t.Fatal("expected one failed installation and one interrupted installation")
 	}
-	private := []string{sshLogName, sshLogUser, sshLogPassword, sshLogBanner, sshLogHome, sshLogStdout, sshLogStderr,
-		peer.address.String(), peer.key.Fingerprint, profile.ID.String(), profileDir}
+	private := []string{sshfixture.ProfileName, sshfixture.User, sshfixture.Password, sshfixture.Banner, sshfixture.Home, sshfixture.Stdout, sshfixture.Stderr,
+		peer.Address().String(), peer.HostKey().Fingerprint, profile.ID.String(), profileDir}
 	logPath, err := sdktest.CurrentLogFile()
 	if err != nil {
 		t.Fatal(err)
@@ -289,7 +289,7 @@ func assertSSHLogOutcomes(t *testing.T, logBody []byte, node protocol.NodeID, ou
 	}
 }
 
-func assertSSHReports(t *testing.T, ctx context.Context, node *Node, server *diagnosticSentryFixture, outcomes []sshLogOutcome, private []string) {
+func assertSSHReports(t *testing.T, ctx context.Context, node *native.Node, server *nodetest.SentryFixture, outcomes []sshLogOutcome, private []string) {
 	t.Helper()
 	wanted := make(map[string]sshLogOutcome)
 	for _, outcome := range outcomes {
@@ -300,11 +300,6 @@ func assertSSHReports(t *testing.T, ctx context.Context, node *Node, server *dia
 			t.Fatal("duplicate report reference across SSH deliveries")
 		}
 		wanted[outcome.ref] = outcome
-	}
-	snapshot := func() [][]byte {
-		server.mu.Lock()
-		defer server.mu.Unlock()
-		return slices.Clone(server.bodies)
 	}
 	parse := func(body []byte) (sentry.Event, [][]byte) {
 		t.Helper()
@@ -317,7 +312,7 @@ func assertSSHReports(t *testing.T, ctx context.Context, node *Node, server *dia
 	}
 	for {
 		seen := make(map[string]bool)
-		for _, body := range snapshot() {
+		for _, body := range server.Bodies() {
 			event, _ := parse(body)
 			if ref, ok := event.Contexts["sailry"]["report_ref"].(string); ok {
 				if _, expected := wanted[ref]; expected {
@@ -334,7 +329,7 @@ func assertSSHReports(t *testing.T, ctx context.Context, node *Node, server *dia
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	if out := commandFixture(t, node, protocol.Command{Kind: "send_diagnostics"}); out.Kind != "diagnostics_sent" {
+	if out := nodetest.Command(t, node, protocol.Command{Kind: "send_diagnostics"}); out.Kind != "diagnostics_sent" {
 		t.Fatalf("send_diagnostics = %s", out.Kind)
 	}
 	if err := node.Stop(ctx); err != nil {
@@ -342,7 +337,7 @@ func assertSSHReports(t *testing.T, ctx context.Context, node *Node, server *dia
 	}
 
 	manual := 0
-	for _, body := range snapshot() {
+	for _, body := range server.Bodies() {
 		assertSSHLogPrivate(t, "Sentry envelope", body, private)
 		event, lines := parse(body)
 		if event.Message == "runtime.diagnostics:requested" {

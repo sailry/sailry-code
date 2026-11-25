@@ -99,17 +99,26 @@ func (module) ToolsForTurn(ctx context.Context, host native.Host, inv *native.Ag
 			}
 		}
 	}
+	primaryOnly := inv.Turn.Config.Assistant == nil && reachable.Bound != nil && reachable.Bound.Kind == "ssh"
+	if primaryOnly && primary == "" {
+		return nil, nil
+	}
 	var turnInstruction native.PromptPart
 	if primary != "" {
-		turnInstruction = native.PromptPart{
-			Key:  "module:ssh",
-			Text: fmt.Sprintf("The primary SSH connection is %s. Use it by default unless the user requests another saved connection; it does not restrict other SSH operations.", primary),
+		turnInstruction.Key = "module:ssh"
+		if primaryOnly {
+			turnInstruction.Text = fmt.Sprintf("This conversation can run SSH commands and transfer files only on the bound connection %s. Do not request credentials or bypass host-key verification.", primary)
+		} else {
+			turnInstruction.Text = fmt.Sprintf("The primary SSH connection is %s. Use it by default unless the user requests another saved connection; it does not restrict other SSH operations.", primary)
 		}
 	}
 
 	tools := make([]native.Tool, 0, len(available))
 	for _, spec := range available {
-		params, err := dynamicParameters(spec.Name, profiles, primary)
+		if primaryOnly && spec.Name != "ssh_run" && spec.Name != "ssh_transfer" {
+			continue
+		}
+		params, err := dynamicParameters(spec.Name, profiles, primary, primaryOnly)
 		if err != nil {
 			return nil, err
 		}
@@ -125,9 +134,15 @@ func (module) ToolsForTurn(ctx context.Context, host native.Host, inv *native.Ag
 		case "ssh_run":
 			prepare = state.prepareRun
 			format = state.formatCompleted
+			if primaryOnly {
+				spec.Description = "Run a command on the bound SSH connection. If a host fingerprint needs confirmation, the user must approve it explicitly."
+			}
 		case "ssh_transfer":
 			prepare = state.prepareTransfer
 			format = state.formatCompleted
+			if primaryOnly {
+				spec.Description = "Transfer a file using the bound SSH connection. The local path is relative to the session worktree."
+			}
 		}
 		tool, err := host.ConnectionTool(inv, native.ConnectionToolConfig{
 			Spec:            spec,
@@ -145,7 +160,7 @@ func (module) ToolsForTurn(ctx context.Context, host native.Host, inv *native.Ag
 	return tools, nil
 }
 
-func dynamicParameters(name string, profiles []sshSummary, primary string) (json.RawMessage, error) {
+func dynamicParameters(name string, profiles []sshSummary, primary string, primaryOnly bool) (json.RawMessage, error) {
 	switch name {
 	case "ssh_connections":
 		return json.RawMessage(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`), nil
@@ -163,6 +178,9 @@ func dynamicParameters(name string, profiles []sshSummary, primary string) (json
 	connProp := map[string]any{"type": "string", "pattern": uuidPattern, "description": string(choicesJSON)}
 	if primary != "" {
 		connProp["default"] = primary
+	}
+	if primaryOnly {
+		connProp["const"] = primary
 	}
 	properties := map[string]any{"connection": connProp}
 	required := []string{"connection"}
@@ -260,7 +278,7 @@ func invalidConn() error {
 }
 
 func unavailableConn() error {
-	return &protocol.Fault{Code: protocol.ErrorCodePermissionDenied, Message: "SSH connection is unavailable to this session; use ssh_connections"}
+	return &protocol.Fault{Code: protocol.ErrorCodePermissionDenied, Message: "SSH connection is unavailable to this session"}
 }
 
 func decodeObject(raw json.RawMessage) (map[string]any, error) {

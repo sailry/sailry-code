@@ -20,8 +20,8 @@ func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
 	}
 
 	assembly := codehost.Assembly()
-	if assembly.CodeIndex == nil || assembly.Databases == nil || assembly.SSH == nil || assembly.Terminal == nil {
-		t.Fatal("Code assembly omitted a development service")
+	if assembly.CodeIndex != nil || assembly.Terminal != nil || assembly.Databases != nil || assembly.SSH != nil || assembly.LegacyWorkspaceModules {
+		t.Fatal("Code assembly should select modules without service overrides or legacy selection")
 	}
 	if assembly.BundledDefaults == nil || len(assembly.BundledDefaults) != 0 {
 		t.Fatalf("Code must explicitly select no default plugins: %#v", assembly.BundledDefaults)
@@ -30,6 +30,8 @@ func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
 		t.Fatalf("Code assembly has %d modules, want %d", len(assembly.Modules), len(base.Modules)+len(development))
 	}
 	seen := make(map[string]bool, len(assembly.Modules))
+	var workspace node.WorkspaceServices
+	var database, ssh, terminal, index bool
 	for _, module := range assembly.Modules {
 		id := module.ID()
 		if seen[id] {
@@ -39,6 +41,19 @@ func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
 		if _, ok := development[id]; ok {
 			development[id] = true
 		}
+		if provider, ok := module.(node.WorkspaceServiceProvider); ok {
+			services := provider.WorkspaceServices()
+			workspace.Git = workspace.Git || services.Git
+			workspace.Worktrees = workspace.Worktrees || services.Worktrees
+		}
+		_, hasDatabase := module.(node.DatabaseServiceProvider)
+		_, hasSSH := module.(node.SSHServiceProvider)
+		_, hasTerminal := module.(node.TerminalServiceProvider)
+		_, hasIndex := module.(node.CodeIndexServiceProvider)
+		database, ssh, terminal, index = database || hasDatabase, ssh || hasSSH, terminal || hasTerminal, index || hasIndex
+	}
+	if !workspace.Git || !workspace.Worktrees || !database || !ssh || !terminal || !index {
+		t.Fatal("Code modules did not provide all development services")
 	}
 	for id, present := range development {
 		if !present {

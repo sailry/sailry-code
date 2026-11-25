@@ -1,9 +1,11 @@
-package node
+package codehost_test
 
 import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
+	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"testing"
 
 	"github.com/sailry/sailry-harness/sdk/sdktest"
@@ -16,7 +18,7 @@ func detachedConnectionScope(session protocol.Session, turn protocol.TurnID, own
 	return scope
 }
 
-func testDetachedConnectionAuthority(t *testing.T, node *Node, session protocol.Session, turn protocol.TurnID, owners map[string]protocol.PluginReference, database protocol.DatabaseProfile, ssh protocol.SshProfile, created protocol.DatabaseProfile) protocol.Request {
+func testDetachedConnectionAuthority(t *testing.T, node *native.Node, session protocol.Session, turn protocol.TurnID, owners map[string]protocol.PluginReference, database protocol.DatabaseProfile, ssh protocol.SshProfile, created protocol.DatabaseProfile) protocol.Request {
 	t.Helper()
 	dbOwner, sshOwner := owners["databases"], owners["ssh"]
 	dbScope, sshScope := detachedConnectionScope(session, turn, dbOwner), detachedConnectionScope(session, turn, sshOwner)
@@ -58,9 +60,9 @@ func testDetachedConnectionAuthority(t *testing.T, node *Node, session protocol.
 			request.Plugin = test.scope
 			var approval protocol.ApprovalID
 			if test.binding != nil {
-				approval = claimedConnectionSave(t, node, request, *test.binding)
+				approval = nodetest.ClaimApproval(t, node, request, *test.binding)
 			}
-			response := dispatchFixture(t, node, node.ID(), request)
+			response := nodetest.Dispatch(t, node, node.ID(), request)
 			if response.Fault == nil || response.Fault.Code != test.code || response.Fault.Message != test.message {
 				t.Fatalf("save returned %+v, want %s %s", response, test.code, test.message)
 			}
@@ -89,14 +91,14 @@ func testDetachedConnectionAuthority(t *testing.T, node *Node, session protocol.
 	}
 	request := protocol.NewRequest(node.ID(), protocol.Command{Kind: "save_database", Data: &dbEdit})
 	request.Plugin = &dbScope
-	claimedConnectionSave(t, node, request, sdktest.ApprovalBinding{Owner: dbOwner, Tool: dbTool, Operation: &dbSave})
+	nodetest.ClaimApproval(t, node, request, sdktest.ApprovalBinding{Owner: dbOwner, Tool: dbTool, Operation: &dbSave})
 	if err := sdktest.Inspect(node).ValidatePluginRequest(t.Context(), node.ID(), request); err != nil {
 		t.Fatalf("active turn could not use its own approval: %v", err)
 	}
 	return request
 }
 
-func admitDetachedConnectionEffects(t *testing.T, node *Node, session protocol.Session, turn protocol.TurnID, owners map[string]protocol.PluginReference, database protocol.DatabaseProfile, ssh protocol.SshProfile) []protocol.Request {
+func admitDetachedConnectionEffects(t *testing.T, node *native.Node, session protocol.Session, turn protocol.TurnID, owners map[string]protocol.PluginReference, database protocol.DatabaseProfile, ssh protocol.SshProfile) []protocol.Request {
 	t.Helper()
 	dbScope, sshScope := detachedConnectionScope(session, turn, owners["databases"]), detachedConnectionScope(session, turn, owners["ssh"])
 	dbQuery := protocol.CommandQueryDatabasePayload{
@@ -137,7 +139,7 @@ func admitDetachedConnectionEffects(t *testing.T, node *Node, session protocol.S
 	return queries
 }
 
-func assertDetachedEffectFault(t *testing.T, node *Node, request protocol.Request, code protocol.ErrorCode) {
+func assertDetachedEffectFault(t *testing.T, node *native.Node, request protocol.Request, code protocol.ErrorCode) {
 	t.Helper()
 	ctx, err := sdktest.Inspect(node).AuthorizeCommand(t.Context(), node.ID(), request)
 	if err != nil {
@@ -147,7 +149,7 @@ func assertDetachedEffectFault(t *testing.T, node *Node, request protocol.Reques
 	if completed.Fault == nil || completed.Fault.Code != code {
 		t.Fatalf("%s worker returned %+v, want %s", request.Command.Kind, completed, code)
 	}
-	replayed := dispatchFixture(t, node, node.ID(), request)
+	replayed := nodetest.Dispatch(t, node, node.ID(), request)
 	if replayed.Fault == nil || replayed.Fault.Code != code || replayed.Fault.Message != completed.Fault.Message {
 		t.Fatalf("%s worker did not replay the settled fault: %+v, %+v", request.Command.Kind, completed, replayed)
 	}

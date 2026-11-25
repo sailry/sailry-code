@@ -1,14 +1,13 @@
-package node
+package codehost_test
 
 import (
 	"context"
 	"errors"
-	"regexp"
-	"slices"
 	"strings"
 	"sync"
 
 	"charm.land/fantasy"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
 )
 
 // agentToolScript is a fake model whose calls for each request come from the
@@ -22,48 +21,15 @@ type agentToolScript struct {
 	plan    func(step int, results map[string]string) [][3]string
 }
 
-// declaredToolName is the name a model reads for a package tool's alias when
-// no other captured tool declares the same name.
-func declaredToolName(alias string) string {
-	if rest, found := strings.CutPrefix(alias, "plugin_"); found && len(rest) > 17 && rest[16] == '_' {
-		return rest[17:]
-	}
-	return alias
-}
-
 func (script *agentToolScript) reset(plan func(int, map[string]string) [][3]string) {
 	script.mu.Lock()
 	defer script.mu.Unlock()
 	script.offered, script.prompts, script.results, script.plan = nil, nil, map[string]string{}, plan
 }
 
-var loadedToolPattern = regexp.MustCompile(`<loaded-tool name="([^"]+)">`)
-
-// callableTools lists the tools a request lets the model call: its
-// declarations, then the loaded deferred tools its context describes, which
-// the model runs through call_tool without a change to the declarations.
-func callableTools(call fantasy.Call) []string {
-	var names []string
-	for _, tool := range call.Tools {
-		names = append(names, tool.GetName())
-	}
-	for _, message := range call.Prompt {
-		for _, part := range message.Content {
-			if text, found := fantasy.AsMessagePart[fantasy.TextPart](part); found {
-				for _, match := range loadedToolPattern.FindAllStringSubmatch(text.Text, -1) {
-					if !slices.Contains(names, match[1]) {
-						names = append(names, match[1])
-					}
-				}
-			}
-		}
-	}
-	return names
-}
-
 func (script *agentToolScript) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
 	script.mu.Lock()
-	script.offered = append(script.offered, callableTools(call))
+	script.offered = append(script.offered, nodetest.CallableTools(call))
 	var prompt strings.Builder
 	for _, message := range call.Prompt {
 		for _, part := range message.Content {
@@ -105,7 +71,7 @@ type mediaScript struct {
 
 func (script *mediaScript) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
 	script.mu.Lock()
-	script.offered = append(script.offered, callableTools(call))
+	script.offered = append(script.offered, nodetest.CallableTools(call))
 	step := len(script.offered)
 	for _, message := range call.Prompt {
 		for _, part := range message.Content {

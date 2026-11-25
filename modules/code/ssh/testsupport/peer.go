@@ -1,4 +1,4 @@
-package node
+package sshfixture
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,35 +16,35 @@ import (
 )
 
 const (
-	sshLogName      = "ssh-canary-profile"
-	sshLogUser      = "ssh-canary-user"
-	sshLogPassword  = "ssh-canary-password"
-	sshLogBanner    = "SSH-2.0-ssh-canary-banner"
-	sshLogHome      = "/home/ssh-canary-remote"
-	sshLogStdout    = "ssh-canary-stdout"
-	sshLogStderr    = "ssh-canary-stderr"
-	sshLogHandshake = "handshake"
-	sshLogPlatform  = "uname -s; uname -m"
-	sshLogPaths     = "printf '%s\\n' \"$HOME\"; uname -s; id -u"
-	sshLogInstall   = "sh -s"
+	ProfileName     = "ssh-canary-profile"
+	User            = "ssh-canary-user"
+	Password        = "ssh-canary-password"
+	Banner          = "SSH-2.0-ssh-canary-banner"
+	Home            = "/home/ssh-canary-remote"
+	Stdout          = "ssh-canary-stdout"
+	Stderr          = "ssh-canary-stderr"
+	Handshake       = "handshake"
+	PlatformCommand = "uname -s; uname -m"
+	PathsCommand    = "printf '%s\\n' \"$HOME\"; uname -s; id -u"
+	InstallCommand  = "sh -s"
 )
 
-type sshLogPeer struct {
+type Peer struct {
 	address       *net.TCPAddr
 	key           protocol.SshHostKey
 	allowPassword atomic.Bool
 	passwordSeen  atomic.Bool
 	installerRuns atomic.Int32
-	pause         atomic.Pointer[sshLogPause]
+	pause         atomic.Pointer[Pause]
 }
 
-type sshLogPause struct {
+type Pause struct {
 	stage   string
 	reached chan struct{}
 	resume  chan struct{}
 }
 
-func newSSHLogPeer(t *testing.T) *sshLogPeer {
+func NewPeer(t *testing.T) *Peer {
 	t.Helper()
 	signer, err := cryptossh.NewSignerFromKey(ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)))
 	if err != nil {
@@ -53,12 +54,12 @@ func newSSHLogPeer(t *testing.T) *sshLogPeer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	peer := &sshLogPeer{
+	peer := &Peer{
 		address: listener.Addr().(*net.TCPAddr),
 		key:     protocol.SshHostKey{Algorithm: signer.PublicKey().Type(), Fingerprint: cryptossh.FingerprintSHA256(signer.PublicKey())},
 	}
-	config := &cryptossh.ServerConfig{ServerVersion: sshLogBanner, PasswordCallback: func(conn cryptossh.ConnMetadata, password []byte) (*cryptossh.Permissions, error) {
-		if conn.User() == sshLogUser && string(password) == sshLogPassword {
+	config := &cryptossh.ServerConfig{ServerVersion: Banner, PasswordCallback: func(conn cryptossh.ConnMetadata, password []byte) (*cryptossh.Permissions, error) {
+		if conn.User() == User && string(password) == Password {
 			peer.passwordSeen.Store(true)
 			if peer.allowPassword.Load() {
 				return nil, nil
@@ -89,13 +90,23 @@ func newSSHLogPeer(t *testing.T) *sshLogPeer {
 	return peer
 }
 
-func (peer *sshLogPeer) pauseAt(stage string) *sshLogPause {
-	pause := &sshLogPause{stage: stage, reached: make(chan struct{}), resume: make(chan struct{})}
+func (peer *Peer) Address() netip.AddrPort { return peer.address.AddrPort() }
+
+func (peer *Peer) HostKey() protocol.SshHostKey { return peer.key }
+
+func (peer *Peer) AllowPassword() { peer.allowPassword.Store(true) }
+
+func (peer *Peer) PasswordSeen() bool { return peer.passwordSeen.Load() }
+
+func (peer *Peer) InstallerRuns() int32 { return peer.installerRuns.Load() }
+
+func (peer *Peer) PauseAt(stage string) *Pause {
+	pause := &Pause{stage: stage, reached: make(chan struct{}), resume: make(chan struct{})}
 	peer.pause.Store(pause)
 	return pause
 }
 
-func (peer *sshLogPeer) arrive(stage string) *sshLogPause {
+func (peer *Peer) arrive(stage string) *Pause {
 	pause := peer.pause.Load()
 	if pause == nil || pause.stage != stage {
 		return nil
@@ -105,7 +116,7 @@ func (peer *sshLogPeer) arrive(stage string) *sshLogPause {
 	return pause
 }
 
-func (pause *sshLogPause) wait(t *testing.T, ctx context.Context) {
+func (pause *Pause) Wait(t *testing.T, ctx context.Context) {
 	t.Helper()
 	select {
 	case <-pause.reached:
@@ -114,15 +125,17 @@ func (pause *sshLogPause) wait(t *testing.T, ctx context.Context) {
 	}
 }
 
-func (peer *sshLogPeer) serve(conn net.Conn, config *cryptossh.ServerConfig) {
+func (pause *Pause) Resume() { close(pause.resume) }
+
+func (peer *Peer) serve(conn net.Conn, config *cryptossh.ServerConfig) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if pause := peer.pause.Load(); pause != nil && pause.stage == sshLogHandshake {
+	if pause := peer.pause.Load(); pause != nil && pause.stage == Handshake {
 		var versionPrefix [4]byte
 		if _, err := io.ReadFull(conn, versionPrefix[:]); err != nil || string(versionPrefix[:]) != "SSH-" {
 			return
 		}
-		peer.arrive(sshLogHandshake)
+		peer.arrive(Handshake)
 		_, _ = io.Copy(io.Discard, conn)
 		return
 	}
@@ -145,7 +158,7 @@ func (peer *sshLogPeer) serve(conn net.Conn, config *cryptossh.ServerConfig) {
 	}
 }
 
-func (peer *sshLogPeer) exec(channel cryptossh.Channel, requests <-chan *cryptossh.Request) {
+func (peer *Peer) exec(channel cryptossh.Channel, requests <-chan *cryptossh.Request) {
 	defer channel.Close()
 	request, ok := <-requests
 	if !ok {
@@ -159,12 +172,12 @@ func (peer *sshLogPeer) exec(channel cryptossh.Channel, requests <-chan *cryptos
 	var stdout, stderr string
 	var status uint32
 	switch payload.Command {
-	case sshLogPlatform:
+	case PlatformCommand:
 		stdout = "Linux\nx86_64\n"
-	case sshLogPaths:
-		stdout = sshLogHome + "\nLinux\n1000\n"
-	case sshLogInstall:
-		stdout, stderr, status = sshLogStdout, sshLogStderr+" "+sshLogHome+"\n", 1
+	case PathsCommand:
+		stdout = Home + "\nLinux\n1000\n"
+	case InstallCommand:
+		stdout, stderr, status = Stdout, Stderr+" "+Home+"\n", 1
 	default:
 		_ = request.Reply(false, nil)
 		return
@@ -172,7 +185,7 @@ func (peer *sshLogPeer) exec(channel cryptossh.Channel, requests <-chan *cryptos
 	if request.Reply(true, nil) != nil {
 		return
 	}
-	if payload.Command == sshLogInstall {
+	if payload.Command == InstallCommand {
 		if size, err := io.Copy(io.Discard, channel); err != nil || size == 0 {
 			return
 		}

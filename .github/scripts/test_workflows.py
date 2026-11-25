@@ -276,7 +276,7 @@ class WorkflowConfigurationTests(unittest.TestCase):
             self.assertIn(f"      {engine}:\n        image:", job)
         step = job.split("      - name: SSH, database and code-index integration tests\n", 1)[1]
         script = textwrap.dedent(step.split("        run: |\n", 1)[1])
-        packages = ["./modules/code/ssh/service", "./modules/code/databases/service", "./modules/code/code-index/node", "./internal/node"]
+        packages = ["./modules/code/ssh/service", "./modules/code/databases/service", "./modules/code/code-index/node", "./internal/assembly/codehost"]
         for package in packages:
             self.assertTrue(any((ROOT / package).glob("*integration_test.go")), package)
         with tempfile.TemporaryDirectory(prefix="code-integration-entry-") as temporary:

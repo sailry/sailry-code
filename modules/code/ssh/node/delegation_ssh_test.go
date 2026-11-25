@@ -1,10 +1,15 @@
-package node
+package sshnode_test
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
+	databasesnode "github.com/sailry/sailry-code/modules/code/databases/node"
+	sshnode "github.com/sailry/sailry-code/modules/code/ssh/node"
+	sshfixture "github.com/sailry/sailry-code/modules/code/ssh/testsupport"
+	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +17,6 @@ import (
 	"time"
 
 	"charm.land/fantasy"
-	codehost "github.com/sailry/sailry-code/internal/assembly/codehost"
 	"github.com/sailry/sailry-harness/sdk/native/process"
 	"github.com/sailry/sailry-harness/sdk/sdktest"
 	protocol "github.com/sailry/sailry-harness/sdk/sdktest/protocol"
@@ -42,8 +46,8 @@ func (m *delegatedSSHModel) Stream(ctx context.Context, call fantasy.Call) (fant
 
 func TestChildInheritsCapturedSSHTools(t *testing.T) {
 	t.Parallel()
-	peer := newSSHLogPeer(t)
-	peer.allowPassword.Store(true)
+	peer := sshfixture.NewPeer(t)
+	peer.AllowPassword()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	parentReady, spawn := make(chan struct{}), make(chan struct{})
@@ -116,7 +120,7 @@ func TestChildInheritsCapturedSSHTools(t *testing.T) {
 				}
 			}
 			return []fantasy.StreamPart{invoke("ssh-list", "ssh_connections", empty), invoke("database-list", "database_connections", empty),
-				invoke("late", "ssh_run", map[string]any{"connection": late.ID, "command": sshLogPlatform})}, nil
+				invoke("late", "ssh_run", map[string]any{"connection": late.ID, "command": sshfixture.PlatformCommand})}, nil
 		case 3:
 			if listed := resultText(call, "ssh-list"); !strings.Contains(listed, shared.ID.String()) || strings.Contains(listed, late.ID.String()) {
 				return nil, fmt.Errorf("child SSH catalog exceeds parent capture: %s", listed)
@@ -127,7 +131,7 @@ func TestChildInheritsCapturedSSHTools(t *testing.T) {
 			if rejected := resultText(call, "late"); !strings.Contains(rejected, "unavailable to this session") {
 				return nil, fmt.Errorf("late SSH target was not rejected: %s", rejected)
 			}
-			return []fantasy.StreamPart{invoke("run", "ssh_run", map[string]any{"connection": shared.ID, "command": sshLogPlatform})}, nil
+			return []fantasy.StreamPart{invoke("run", "ssh_run", map[string]any{"connection": shared.ID, "command": sshfixture.PlatformCommand})}, nil
 		case 4:
 			if result := resultText(call, "run"); !strings.Contains(result, "x86_64") {
 				return nil, fmt.Errorf("inherited SSH run failed: %s", result)
@@ -147,7 +151,7 @@ func TestChildInheritsCapturedSSHTools(t *testing.T) {
 		}
 	}}
 	environment := process.NewEnvironment([]string{"PATH=/usr/bin:/bin"})
-	node, err := StartWithOptions(ctx, filepath.Join(t.TempDir(), "profile"), Options{Assembly: codehost.Assembly(), MCP: sdktest.MCPOptions(), Environment: &environment,
+	node, err := native.StartWithOptions(ctx, filepath.Join(t.TempDir(), "profile"), native.Options{Assembly: native.Assembly{Modules: []native.Module{sshnode.Module(), databasesnode.Module()}}, MCP: sdktest.MCPOptions(), Environment: &environment,
 		Model: func(_ context.Context, binding sdktest.Binding) (fantasy.LanguageModel, error) {
 			if binding.Session == parent.ID {
 				return parentModel, nil
@@ -162,28 +166,28 @@ func TestChildInheritsCapturedSSHTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	project := commandFixture(t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{Name: "SSH delegation", Path: root, Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance()}}).Data.(protocol.Project)
+	project := nodetest.Command(t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{Name: "SSH delegation", Path: root, Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance()}}).Data.(protocol.Project)
 	save := func(name string, sharing protocol.ConnectionSharing) protocol.SshProfile {
 		t.Helper()
-		return commandFixture(t, node, protocol.Command{Kind: "save_ssh", Data: protocol.CommandSaveSshPayload{
-			Profile: protocol.SshProfile{ID: protocol.NewSshID(), Name: name, Host: peer.address.IP.String(), Port: uint16(peer.address.Port),
-				Username: sshLogUser, Authentication: protocol.SshAuthenticationPassword, Sharing: &sharing},
-			Credential: &protocol.SshCredential{Kind: "password", Data: &protocol.SshCredentialPasswordPayload{Password: protocol.NewSecret(sshLogPassword)}},
+		return nodetest.Command(t, node, protocol.Command{Kind: "save_ssh", Data: protocol.CommandSaveSshPayload{
+			Profile: protocol.SshProfile{ID: protocol.NewSshID(), Name: name, Host: peer.Address().Addr().String(), Port: peer.Address().Port(),
+				Username: sshfixture.User, Authentication: protocol.SshAuthenticationPassword, Sharing: &sharing},
+			Credential: &protocol.SshCredential{Kind: "password", Data: &protocol.SshCredentialPasswordPayload{Password: protocol.NewSecret(sshfixture.Password)}},
 		}}).Data.(protocol.SshProfile)
 	}
 	shared = save("Project fixture", protocol.ConnectionSharing{Kind: "projects", Data: &[]protocol.ProjectID{project.ID}})
 	if err = os.WriteFile(filepath.Join(root, "result.txt"), []byte("fixture\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	config := connectionModelConfig(t, node)
+	config := nodetest.SessionConfig(t, node, 32000, protocol.PermissionAsk)
 	config.Mode, config.Permission = protocol.WorkModeFlagship, protocol.PermissionProject
-	parent = commandFixture(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Project: &project.ID, Config: &config}}).Data.(protocol.Session)
+	parent = nodetest.Command(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Project: &project.ID, Config: &config}}).Data.(protocol.Session)
 	changes, err := node.Subscribe(ctx, node.ID(), protocol.Topic{Kind: "node"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer changes.Close()
-	commandFixture(t, node, protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{Session: parent.ID, ExpectedRevision: parent.Revision, Message: protocol.ConversationInput{Text: "Delegate the SSH fixture check"}}})
+	nodetest.Command(t, node, protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{Session: parent.ID, ExpectedRevision: parent.Revision, Message: protocol.ConversationInput{Text: "Delegate the SSH fixture check"}}})
 	select {
 	case <-parentReady:
 	case <-ctx.Done():
@@ -218,7 +222,7 @@ func TestChildInheritsCapturedSSHTools(t *testing.T) {
 			t.Fatalf("SSH child ended %s: %v", run.Status, run.Error)
 		}
 		if run.Status == protocol.ConversationStatusCompleted {
-			if session.Project == nil || *session.Project != project.ID || session.Config.Permission != config.Permission || !trust || !transfer || !saved || !peer.passwordSeen.Load() {
+			if session.Project == nil || *session.Project != project.ID || session.Config.Permission != config.Permission || !trust || !transfer || !saved || !peer.PasswordSeen() {
 				t.Fatalf("child scope or effects differ: permission=%s approvals=%v/%v/%v", session.Config.Permission, trust, transfer, saved)
 			}
 			return
@@ -248,7 +252,7 @@ func TestChildInheritsCapturedSSHTools(t *testing.T) {
 			decision := protocol.ConversationDecision{Kind: "approve"}
 			switch operation {
 			case protocol.ToolOperationRunSsh:
-				if approval.Session != run.Session || approval.Source != protocol.ConversationApprovalSourceUser || approval.Ssh == nil || approval.Ssh.Profile != shared.ID || approval.Ssh.Key != peer.key || approval.CanRemember || peer.passwordSeen.Load() {
+				if approval.Session != run.Session || approval.Source != protocol.ConversationApprovalSourceUser || approval.Ssh == nil || approval.Ssh.Profile != shared.ID || approval.Ssh.Key != peer.HostKey() || approval.CanRemember || peer.PasswordSeen() {
 					t.Fatalf("unexpected child fingerprint approval: %+v", approval)
 				}
 				trust = true
@@ -260,7 +264,7 @@ func TestChildInheritsCapturedSSHTools(t *testing.T) {
 			default:
 				t.Fatalf("unexpected child approval for %s", operation)
 			}
-			commandFixture(t, node, protocol.Command{Kind: "resolve_approval", Data: protocol.CommandResolveApprovalPayload{Session: approval.Session, Approval: approval.ID, Decision: decision}})
+			nodetest.Command(t, node, protocol.Command{Kind: "resolve_approval", Data: protocol.CommandResolveApprovalPayload{Session: approval.Session, Approval: approval.ID, Decision: decision}})
 			seen[approval.ID] = true
 		}
 		if _, err := changes.Next(ctx); err != nil {

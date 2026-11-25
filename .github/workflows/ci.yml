@@ -147,7 +147,7 @@ jobs:
           unset GOROOT
           export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=0
           go test -p 1 -timeout 20m -tags integration \
-            ./modules/code/ssh/service ./modules/code/databases/service ./modules/code/code-index/node ./internal/node
+            ./modules/code/ssh/service ./modules/code/databases/service ./modules/code/code-index/node ./internal/assembly/codehost
 
   native:
     strategy:

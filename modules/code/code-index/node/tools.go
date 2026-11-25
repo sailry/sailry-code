@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	codeindexapi "github.com/sailry/sailry-harness/sdk/native/codeindex"
 	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"github.com/sailry/sailry-harness/sdk/native/protocol"
 )
@@ -25,12 +26,18 @@ var loadCatalog = sync.OnceValues(func() (native.CatalogSpec, error) {
 
 type module struct{}
 
+var _ native.CodeIndexServiceProvider = module{}
+
 // Module returns the compile-time native Node module providing the six code
 // navigation and chained-read tools directly in Go without JS flow round-trips.
 func Module() native.Module { return module{} }
 
 func (module) ID() string                { return "code-index" }
 func (module) ReplacesPlugins() []string { return []string{"code"} }
+
+func (module) NewCodeIndexService(profile string, watch Watch) codeindexapi.Service {
+	return NewService(profile, watch)
+}
 
 func (module) Catalog() []native.ToolMeta {
 	catalog, err := loadCatalog()

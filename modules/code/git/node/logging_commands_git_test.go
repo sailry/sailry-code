@@ -1,10 +1,13 @@
-package node
+package gitnode_test
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
+	gitnode "github.com/sailry/sailry-code/modules/code/git/node"
+	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,7 +17,6 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	gogit "github.com/go-git/go-git/v5"
-	"github.com/sailry/sailry-code/internal/assembly/codehost"
 	"github.com/sailry/sailry-harness/sdk/native/process"
 	"github.com/sailry/sailry-harness/sdk/sdktest"
 	protocol "github.com/sailry/sailry-harness/sdk/sdktest/protocol"
@@ -35,11 +37,11 @@ func TestGitBadgeCommandReporting(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(closeLog)
-	server := newDiagnosticSentryFixture(t)
+	server := nodetest.NewSentry(t)
 	const localCause = "private fixture Git process failure"
 	var inspected atomic.Bool
-	node, err := StartWithOptions(t.Context(), profile, Options{
-		Assembly:    codehost.Assembly(),
+	node, err := native.StartWithOptions(t.Context(), profile, native.Options{
+		Assembly:    native.Assembly{Modules: []native.Module{gitnode.Module()}},
 		Environment: new(process.NewEnvironment(nil)),
 		Git: sdktest.GitOptions{Run: func(_ context.Context, _ string, args []string, _ []byte) (sdktest.GitCommandResult, error) {
 			if slices.Contains(args, "status") {
@@ -47,22 +49,22 @@ func TestGitBadgeCommandReporting(t *testing.T) {
 			}
 			return sdktest.GitCommandResult{}, errors.New(localCause)
 		}},
-		Telemetry: sdktest.TelemetryOptions{Lookup: diagnosticEnvironment(map[string]string{"SAILRY_SENTRY_DSN": server.dsn()})},
+		Telemetry: server.Options(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = node.Stop(context.Background()) })
 	const entry = "dev.sailry.platform/host/main.js"
-	installPluginFixture(t, node, "git", map[string]string{
+	nodetest.InstallPlugin(t, node, "git", map[string]string{
 		"plugin.json": `{"$schema":"` + sdktest.ManifestSchema + `","name":"git","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","scope":"host","requires_modules":["git"],"actions":["git.read"],"ui":[{"id":"changes","slot":"status","kind":"button","label":{"label":"Git"},"handler":"changes","order":0}],"host":{"entry":"` + entry + `","resources":["` + entry + `"],"handlers":["badge"],"read_only":["badge"],"status":{"read":"badge","changes":["repository"]}}}}}`,
 		entry:         `import {inspectGit} from 'sailry/sdk'; export async function badge() { await inspectGit(); return []; }`,
 	})
-	project := commandFixture(t, node, protocol.Command{Kind: "register_project", Data: protocol.CommandRegisterProjectPayload{Name: "Git badge", Path: root}}).Data.(protocol.Project)
+	project := nodetest.Command(t, node, protocol.Command{Kind: "register_project", Data: protocol.CommandRegisterProjectPayload{Name: "Git badge", Path: root}}).Data.(protocol.Project)
 	config := diagnosticSessionConfigFixture(t, node)
-	session := commandFixture(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Project: &project.ID, Config: &config}}).Data.(protocol.Session)
-	output := commandFixture(t, node, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: "git"}})
-	info, ok := dispatchPayload[protocol.PluginInfo](output.Data)
+	session := nodetest.Command(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Project: &project.ID, Config: &config}}).Data.(protocol.Session)
+	output := nodetest.Command(t, node, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: "git"}})
+	info, ok := nodetest.Payload[protocol.PluginInfo](output.Data)
 	if !ok || info.Extension == nil || info.Extension.Host == nil || info.Extension.Host.Status == nil {
 		t.Fatal("fixture Git status callback is unavailable")
 	}
@@ -72,12 +74,12 @@ func TestGitBadgeCommandReporting(t *testing.T) {
 	missingScope := scope
 	missingScope.Package.Name = "missing-git-fixture"
 	missing.Plugin = &missingScope
-	if fault := dispatchFixture(t, node, node.ID(), missing).Fault; fault == nil || fault.Code != protocol.ErrorCodeNotFound {
+	if fault := nodetest.Dispatch(t, node, node.ID(), missing).Fault; fault == nil || fault.Code != protocol.ErrorCodeNotFound {
 		t.Fatalf("missing package returned %v", fault)
 	}
 	request := protocol.NewRequest(node.ID(), command)
 	request.Plugin = &scope
-	fault := dispatchFixture(t, node, node.ID(), request).Fault
+	fault := nodetest.Dispatch(t, node, node.ID(), request).Fault
 	if fault == nil || fault.Code != protocol.ErrorCodeUnavailable || fault.Message != "Git repository operation failed: "+localCause {
 		t.Fatalf("Git callback returned %v", fault)
 	}
@@ -112,12 +114,11 @@ func TestGitBadgeCommandReporting(t *testing.T) {
 			t.Errorf("missing local %s record for %s (%s)", want.level, want.code, want.stage)
 		}
 	}
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	if len(server.bodies) == 0 {
+	bodies := server.Bodies()
+	if len(bodies) == 0 {
 		t.Fatal("Git failure did not reach the Sentry fixture")
 	}
-	for _, body := range server.bodies {
+	for _, body := range bodies {
 		lines := bytes.SplitN(body, []byte("\n"), 4)
 		var event sentry.Event
 		if len(lines) < 3 || json.Unmarshal(lines[2], &event) != nil {
@@ -135,4 +136,34 @@ func TestGitBadgeCommandReporting(t *testing.T) {
 			}
 		}
 	}
+}
+
+func diagnosticSessionConfigFixture(t *testing.T, node *native.Node) protocol.SessionConfig {
+	t.Helper()
+	provider := protocol.DefaultConversationProvider()
+	provider.ID, provider.Name = protocol.NewProviderID(), "Fixture"
+	provider.Api, provider.Authentication, provider.Enabled = protocol.ConversationModelApiChatCompletions, protocol.AuthenticationApiKey, true
+	provider.Endpoint, provider.DefaultModel = "https://fixture.invalid/v1", "fixture"
+	model := protocol.DefaultConversationModel()
+	model.ID, model.Context, model.Output = "fixture", 64000, 8192
+	vision := false
+	model.Capabilities = &protocol.ConversationDiscoveryCapabilities{Vision: &vision}
+	provider.Models = []protocol.ConversationModel{model}
+	key := protocol.NewSecret("test-only-session-fixture-key")
+	response := nodetest.Dispatch(t, node, node.ID(), protocol.NewRequest(node.ID(), protocol.Command{Kind: "save_provider", Data: &protocol.CommandSaveProviderPayload{Provider: provider, Secret: &key}}))
+	if response.Fault != nil {
+		t.Fatal(response.Fault)
+	}
+	created := response.Output.Data.(protocol.ConversationProvider)
+	config := protocol.DefaultSessionConfig()
+	config.Provider, config.Model, config.Credential = created.ID, created.DefaultModel, created.Credential
+	config.Mode, config.Permission = protocol.WorkModeCode, protocol.PermissionProject
+	return config
+}
+
+func diagnosticFault(fault *protocol.Fault) (protocol.NotificationSystemSystemDiagnostic, bool) {
+	if fault.Details == nil || fault.Details.Kind != "system_diagnostic" {
+		return protocol.NotificationSystemSystemDiagnostic{}, false
+	}
+	return nodetest.Payload[protocol.NotificationSystemSystemDiagnostic](fault.Details.Data)
 }

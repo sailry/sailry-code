@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	databasesservice "github.com/sailry/sailry-code/modules/code/databases/service"
 	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"github.com/sailry/sailry-harness/sdk/native/protocol"
 )
@@ -39,12 +40,18 @@ type dbSummary struct {
 
 type module struct{}
 
+var _ native.DatabaseServiceProvider = module{}
+
 // Module returns the native Node module providing database connection and query
 // tools.
 func Module() native.Module { return module{} }
 
 func (module) ID() string                { return "databases" }
 func (module) ReplacesPlugins() []string { return []string{"databases"} }
+
+func (module) ExecuteDatabase(ctx context.Context, operation native.DatabaseOperation) (protocol.DatabaseOutcome, error) {
+	return databasesservice.ExecuteOperation(ctx, operation)
+}
 
 func (module) Catalog() []native.ToolMeta {
 	catalog, err := loadCatalog()

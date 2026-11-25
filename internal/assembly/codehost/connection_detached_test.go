@@ -1,9 +1,12 @@
-package node
+package codehost_test
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
+	sshfixture "github.com/sailry/sailry-code/modules/code/ssh/testsupport"
+	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"os"
 	"path/filepath"
 	"slices"
@@ -36,10 +39,10 @@ func (script *detachedConnectionScript) Stream(ctx context.Context, call fantasy
 
 func testDetachedConnectionTools(t *testing.T) {
 	script := &detachedConnectionScript{}
-	peer := newSSHLogPeer(t)
-	peer.allowPassword.Store(true)
+	peer := sshfixture.NewPeer(t)
+	peer.AllowPassword()
 	environment := process.NewEnvironment([]string{"PATH=/usr/bin:/bin"})
-	node, err := StartWithOptions(t.Context(), filepath.Join(t.TempDir(), "profile"), Options{
+	node, err := native.StartWithOptions(t.Context(), filepath.Join(t.TempDir(), "profile"), native.Options{
 		Assembly: codehost.Assembly(), Environment: &environment, MCP: sdktest.MCPOptions(),
 		Model: func(context.Context, sdktest.Binding) (fantasy.LanguageModel, error) { return script, nil },
 	})
@@ -54,11 +57,11 @@ func testDetachedConnectionTools(t *testing.T) {
 		}
 	})
 	config := connectionModelConfig(t, node)
-	session := commandFixture(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &config}}).Data.(protocol.Session)
+	session := nodetest.Command(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &config}}).Data.(protocol.Session)
 	if session.Project != nil || session.Config.Resource != nil || session.Config.Assistant != nil {
 		t.Fatalf("ordinary conversation has a binding: %+v", session)
 	}
-	project := commandFixture(t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
+	project := nodetest.Command(t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
 		Name: "Other project", Path: t.TempDir(), Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance(),
 	}}).Data.(protocol.Project)
 	global := &protocol.ConnectionSharing{Kind: "global"}
@@ -89,7 +92,7 @@ func testDetachedConnectionTools(t *testing.T) {
 		"databases": `["databases.read","databases.control","databases.manage","conversation.read","conversation.control","projects.read","ssh.read"]`,
 		"ssh":       `["ssh.read","ssh.control","ssh.manage","conversation.read","conversation.control","projects.read"]`,
 	} {
-		info := installPluginFixture(t, node, name, map[string]string{
+		info := nodetest.InstallPlugin(t, node, name, map[string]string{
 			"plugin.json": `{"$schema":"` + sdktest.ManifestSchema + `","name":"` + name + `","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","scope":"host","requires_modules":["` + name + `"],"actions":` + actions + `}}}`,
 		})
 		owners[name] = sdktest.PackageReference(info)
@@ -100,7 +103,7 @@ func testDetachedConnectionTools(t *testing.T) {
 		scope.Package = owners[owner]
 		request := protocol.NewRequest(node.ID(), command)
 		request.Plugin = &scope
-		response := dispatchFixture(t, node, node.ID(), request)
+		response := nodetest.Dispatch(t, node, node.ID(), request)
 		if response.Fault != nil {
 			t.Fatal(response.Fault)
 		}
@@ -122,15 +125,15 @@ func testDetachedConnectionTools(t *testing.T) {
 	}
 	database, privateDB, projectDB := saveDatabase("global", global), saveDatabase("private", nil), saveDatabase("project", projectOnly)
 	ssh := controller("ssh", protocol.Command{Kind: "save_ssh", Data: protocol.CommandSaveSshPayload{
-		Profile: protocol.SshProfile{ID: protocol.NewSshID(), Name: "global", Host: peer.address.IP.String(), Port: uint16(peer.address.Port), Username: sshLogUser,
+		Profile: protocol.SshProfile{ID: protocol.NewSshID(), Name: "global", Host: peer.Address().Addr().String(), Port: peer.Address().Port(), Username: sshfixture.User,
 			Authentication: protocol.SshAuthenticationPassword, Sharing: global},
-		Credential: &protocol.SshCredential{Kind: "password", Data: protocol.SshCredentialPasswordPayload{Password: protocol.NewSecret(sshLogPassword)}},
+		Credential: &protocol.SshCredential{Kind: "password", Data: protocol.SshCredentialPasswordPayload{Password: protocol.NewSecret(sshfixture.Password)}},
 	}}).Data.(protocol.SshProfile)
 	privateSSH, projectSSH := saveSSH("private", nil), saveSSH("project", projectOnly)
 	if database.Sharing == nil || database.Sharing.Kind != "global" || ssh.Sharing == nil || ssh.Sharing.Kind != "global" {
 		t.Fatal("Node-wide controller creation failed to retain global sharing")
 	}
-	commandFixture(t, node, protocol.Command{Kind: "query_database", Data: protocol.CommandQueryDatabasePayload{
+	nodetest.Command(t, node, protocol.Command{Kind: "query_database", Data: protocol.CommandQueryDatabasePayload{
 		Profile: database.ID, ExpectedRevision: database.Revision, Sql: "CREATE TABLE fixture (value TEXT)", RowLimit: 1, TimeoutMs: 1000,
 	}})
 	scratchPath := filepath.Join(filepath.Dir(path), "scratch.db")
@@ -148,7 +151,7 @@ func testDetachedConnectionTools(t *testing.T) {
 		return protocol.ConversationReference{Label: "Database", Target: protocol.ConversationReferenceTarget{Kind: "database", Data: &protocol.ConversationReferenceTargetDatabasePayload{Connection: id}}}
 	}
 	for _, ref := range []protocol.ConversationReference{dbRef(privateDB.ID), dbRef(projectDB.ID), sshRef(privateSSH.ID), sshRef(projectSSH.ID)} {
-		response := dispatchFixture(t, node, node.ID(), protocol.NewRequest(node.ID(), protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{
+		response := nodetest.Dispatch(t, node, node.ID(), protocol.NewRequest(node.ID(), protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{
 			Session: session.ID, ExpectedRevision: session.Revision, Message: protocol.ConversationInput{Text: "Use this connection", References: []protocol.ConversationReference{ref}},
 		}}))
 		message := "referenced database is not available to this conversation"
@@ -177,7 +180,7 @@ func testDetachedConnectionTools(t *testing.T) {
 		return call(id, "database_query", map[string]any{"connection": target, "sql": "SELECT 'detached-query-fixture'"})
 	}
 	sshRun := func(id string) [3]string {
-		return call(id, "ssh_run", map[string]any{"connection": ssh.ID, "command": sshLogPlatform, "timeout_ms": 5000})
+		return call(id, "ssh_run", map[string]any{"connection": ssh.ID, "command": sshfixture.PlatformCommand, "timeout_ms": 5000})
 	}
 	lists := func(dbCall, sshCall string) [][3]string {
 		return [][3]string{call(dbCall, "database_connections", map[string]any{}), call(sshCall, "ssh_connections", map[string]any{})}
@@ -246,7 +249,7 @@ func testDetachedConnectionTools(t *testing.T) {
 	}
 	defer subscription.Close()
 	submit := func(revision uint64, refs ...protocol.ConversationReference) protocol.TurnID {
-		return commandFixture(t, node, protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{
+		return nodetest.Command(t, node, protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{
 			Session: session.ID, ExpectedRevision: revision, Message: protocol.ConversationInput{Text: "Inspect saved connections", References: refs},
 		}}).Data.(protocol.QueuedTurn).ID
 	}
@@ -295,13 +298,13 @@ func testDetachedConnectionTools(t *testing.T) {
 				continue
 			}
 			if trust := approval.Ssh; trust != nil {
-				want := protocol.SshTrust{Profile: ssh.ID, ExpectedRevision: ssh.Revision + 1, Host: ssh.Host, Port: ssh.Port, Key: peer.key}
-				if hostKeyApproved || *trust != want || approval.Source != protocol.ConversationApprovalSourceUser || approval.CanRemember || peer.passwordSeen.Load() {
+				want := protocol.SshTrust{Profile: ssh.ID, ExpectedRevision: ssh.Revision + 1, Host: ssh.Host, Port: ssh.Port, Key: peer.HostKey()}
+				if hostKeyApproved || *trust != want || approval.Source != protocol.ConversationApprovalSourceUser || approval.CanRemember || peer.PasswordSeen() {
 					t.Fatalf("unexpected SSH host-key approval: %+v", approval)
 				}
 				hostKeyApproved = true
 			}
-			commandFixture(t, node, protocol.Command{Kind: "resolve_approval", Data: protocol.CommandResolveApprovalPayload{
+			nodetest.Command(t, node, protocol.Command{Kind: "resolve_approval", Data: protocol.CommandResolveApprovalPayload{
 				Session: session.ID, Approval: approval.ID, Decision: protocol.ConversationDecision{Kind: "approve"},
 			}})
 			approved[approval.ID] = true
@@ -309,7 +312,7 @@ func testDetachedConnectionTools(t *testing.T) {
 		return len(approved) == 5
 	})
 	awaitPause(usedPrivate)
-	if !hostKeyApproved || !peer.passwordSeen.Load() {
+	if !hostKeyApproved || !peer.PasswordSeen() {
 		t.Fatal("ordinary ssh_run did not authenticate after host-key approval")
 	}
 	if createdDB.Data.ID == (protocol.DatabaseID{}) || createdDB.Data.Sharing != nil || createdDB.Data.Revision != 1 ||
@@ -336,7 +339,7 @@ func testDetachedConnectionTools(t *testing.T) {
 		editedSSH.Name != "Edited SSH" || editedSSH.Sharing == nil || editedSSH.Sharing.Kind != "global" {
 		t.Fatalf("approved ordinary edits did not retain global sharing: %+v, %+v", editedDB, editedSSH)
 	}
-	if editedSSH.HostKey == nil || *editedSSH.HostKey != peer.key {
+	if editedSSH.HostKey == nil || *editedSSH.HostKey != peer.HostKey() {
 		t.Fatalf("SSH host key did not match the approved fingerprint: %+v", editedSSH.HostKey)
 	}
 	approvedSave := testDetachedConnectionAuthority(t, node, session, turn, owners, editedDB, editedSSH, createdDB.Data)
@@ -348,7 +351,7 @@ func testDetachedConnectionTools(t *testing.T) {
 	for _, request := range staged[1:] {
 		assertDetachedEffectFault(t, node, request, protocol.ErrorCodePermissionDenied)
 	}
-	revoked := dispatchFixture(t, node, node.ID(), approvedSave)
+	revoked := nodetest.Dispatch(t, node, node.ID(), approvedSave)
 	if revoked.Fault == nil || revoked.Fault.Code != protocol.ErrorCodePermissionDenied || revoked.Fault.Message != "connection is not available to this captured resource" {
 		t.Fatalf("an approved save could still edit a revoked connection: %+v", revoked)
 	}
@@ -388,7 +391,7 @@ func testDetachedConnectionTools(t *testing.T) {
 	assertDetachedToolFault(t, "revoked-query", responses["revoked-query"], protocol.ErrorCodePermissionDenied)
 	assertDetachedToolFault(t, "revoked-ssh-run", responses["revoked-ssh-run"], protocol.ErrorCodePermissionDenied)
 
-	commandFixture(t, node, protocol.Command{Kind: "set_plugin_enabled", Data: protocol.CommandSetPluginEnabledPayload{
+	nodetest.Command(t, node, protocol.Command{Kind: "set_plugin_enabled", Data: protocol.CommandSetPluginEnabledPayload{
 		Name: pluginName, ExpectedRevision: fixture.Summary.Revision, Enabled: false,
 	}})
 	var current protocol.Session
@@ -416,7 +419,7 @@ func testDetachedConnectionTools(t *testing.T) {
 	awaitPause(nextStarted)
 	scope := detachedConnectionScope(current, turn, owners["databases"])
 	approvedSave.Plugin = &scope
-	wrongTurn := dispatchFixture(t, node, node.ID(), approvedSave)
+	wrongTurn := nodetest.Dispatch(t, node, node.ID(), approvedSave)
 	if wrongTurn.Fault == nil || wrongTurn.Fault.Code != protocol.ErrorCodePermissionDenied || wrongTurn.Fault.Message != "connection save has no claimed approval" {
 		t.Fatalf("another turn reused a save approval: %+v", wrongTurn)
 	}
@@ -445,7 +448,7 @@ func assertDetachedSSHResult(t *testing.T, text string) {
 	if err := json.Unmarshal([]byte(text), &result); err != nil || result.Kind != "ssh_outcome" || result.Data.Kind != "completed" {
 		t.Fatalf("model received an unexpected SSH outcome: %q, %v", text, err)
 	}
-	completed, valid := dispatchPayload[protocol.SshOutcomeCompletedPayload](result.Data.Data)
+	completed, valid := nodetest.Payload[protocol.SshOutcomeCompletedPayload](result.Data.Data)
 	if !valid || completed.Stdout != "Linux\nx86_64\n" || completed.Stderr != "" || completed.ExitCode != 0 || completed.Truncated {
 		t.Fatalf("loopback SSH result did not reach the model: %q", text)
 	}
@@ -464,7 +467,7 @@ func assertDetachedToolFault(t *testing.T, id string, response *sdktest.ToolResp
 	}
 }
 
-func detachedToolResponses(t *testing.T, node *Node, session protocol.SessionID, turn protocol.TurnID) map[string]*sdktest.ToolResponse {
+func detachedToolResponses(t *testing.T, node *native.Node, session protocol.SessionID, turn protocol.TurnID) map[string]*sdktest.ToolResponse {
 	t.Helper()
 	results := map[string]*sdktest.ToolResponse{}
 	if err := sdktest.Inspect(node).Store().Node.Read(t.Context(), func(db *sql.Conn) error {

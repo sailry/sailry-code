@@ -1,6 +1,6 @@
 //go:build integration
 
-package node
+package codeindex_test
 
 import (
 	"context"
@@ -15,8 +15,11 @@ import (
 	"testing"
 	"time"
 
-	codehost "github.com/sailry/sailry-code/internal/assembly/codehost"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
 	codeindex "github.com/sailry/sailry-code/modules/code/code-index/node"
+	worktreesnode "github.com/sailry/sailry-code/modules/code/worktrees/node"
+	"github.com/sailry/sailry-harness/modules/files/node"
+	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"github.com/sailry/sailry-harness/sdk/native/storage"
 	"github.com/sailry/sailry-harness/sdk/sdktest"
 	protocol "github.com/sailry/sailry-harness/sdk/sdktest/protocol"
@@ -47,25 +50,25 @@ func codeSymbols(symbols []protocol.CodeIndexSymbol) []codeSymbol {
 	return found
 }
 
-func codeSearch(t *testing.T, node *Node, worktree protocol.WorktreeID, query protocol.CodeIndexSearch) protocol.CodeIndexSearchPage {
+func codeSearch(t *testing.T, node *native.Node, worktree protocol.WorktreeID, query protocol.CodeIndexSearch) protocol.CodeIndexSearchPage {
 	t.Helper()
 	if query.Limit == 0 {
 		query.Limit = 20
 	}
-	page := acceptanceDo[protocol.CodeIndexSearchPage](t, node, protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: worktree, Query: query}})
+	page := nodetest.Do[protocol.CodeIndexSearchPage](t, node, protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: worktree, Query: query}})
 	if page.Partial || page.Truncated {
 		t.Fatalf("search %+v is incomplete: %+v", query, page)
 	}
 	return page
 }
 
-func codeGraph(t *testing.T, node *Node, worktree protocol.WorktreeID, view protocol.CodeIndexGraphView, name string) protocol.CodeIndexGraphGraphPage {
+func codeGraph(t *testing.T, node *native.Node, worktree protocol.WorktreeID, view protocol.CodeIndexGraphView, name string) protocol.CodeIndexGraphGraphPage {
 	t.Helper()
 	query := protocol.CodeIndexGraph{View: view, Paths: []string{}, Depth: 3, Limit: 50}
 	if name != "" {
 		query.Name = &name
 	}
-	page := acceptanceDo[protocol.CodeIndexGraphGraphPage](t, node, protocol.Command{Kind: "graph_code", Data: protocol.CommandGraphCodePayload{Worktree: worktree, Query: query}})
+	page := nodetest.Do[protocol.CodeIndexGraphGraphPage](t, node, protocol.Command{Kind: "graph_code", Data: protocol.CommandGraphCodePayload{Worktree: worktree, Query: query}})
 	if page.View != view || page.Partial || page.Truncated {
 		t.Fatalf("graph %s %s is incomplete: %+v", view, name, page)
 	}
@@ -124,30 +127,31 @@ func codeFingerprints(t *testing.T, database string, replace string) []string {
 // small project in several languages.
 func TestCodeIndexCommands(t *testing.T) {
 	requireCodeIndex(t)
+	assembly := native.Assembly{Modules: []native.Module{codeindex.Module(), filesnode.Module(), worktreesnode.Module()}}
 	profile := filepath.Join(t.TempDir(), "profile")
-	node := acceptanceNode(t, profile, nil, Options{Assembly: codehost.Assembly()})
+	node := nodetest.Start(t, profile, nil, native.Options{Assembly: assembly})
 	stopped := false
 	defer func() {
 		if !stopped {
 			node.Stop(context.Background())
 		}
 	}()
-	root, commit := codeProject(t, codeFixture)
-	project := acceptanceDo[protocol.Project](t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
+	root, commit := nodetest.GitProject(t, codeFixture)
+	project := nodetest.Do[protocol.Project](t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
 		Name: "Code fixture", Path: root, Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance(),
 	}})
-	main := codeMain(t, node, project.ID)
+	main := nodetest.MainWorktree(t, node, project.ID)
 	cache := func(worktree protocol.WorktreeID) string {
 		return filepath.Join(profile, "cache", "code-index", worktree.String())
 	}
 	settings := func() protocol.CodeIndexSettings {
-		return acceptanceDo[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "read_code_index_settings"})
+		return nodetest.Do[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "read_code_index_settings"})
 	}
 	configure := func(projects ...protocol.ProjectID) {
 		current := settings()
 		current.Persistent = nil // The old client's request shape.
 		current.PersistentProjects = new(append([]protocol.ProjectID{}, projects...))
-		acceptanceDo[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "save_code_index_settings", Data: protocol.CommandSaveCodeIndexSettingsPayload{Settings: current, ExpectedRevision: current.Revision}})
+		nodetest.Do[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "save_code_index_settings", Data: protocol.CommandSaveCodeIndexSettingsPayload{Settings: current, ExpectedRevision: current.Revision}})
 	}
 	if found := settings(); !found.Enabled || found.Revision != 0 || found.Persistent == nil || *found.Persistent || found.PersistentProjects == nil || len(*found.PersistentProjects) != 0 {
 		t.Fatalf("default settings %+v", found)
@@ -172,7 +176,7 @@ func TestCodeIndexCommands(t *testing.T) {
 				{"lib/index.rs", "Index", "struct", 0}, {"lib/index.rs", "build", "function", 4}, {"lib/index.rs", "open", "function", 8},
 			}},
 		} {
-			outline := acceptanceDo[protocol.CodeIndexOutline](t, node, protocol.Command{Kind: "outline_code", Data: protocol.CommandOutlineCodePayload{Worktree: main, Path: expected.path}})
+			outline := nodetest.Do[protocol.CodeIndexOutline](t, node, protocol.Command{Kind: "outline_code", Data: protocol.CommandOutlineCodePayload{Worktree: main, Path: expected.path}})
 			source := codeFixture[expected.path]
 			if outline.Path != expected.path || outline.Language == nil || *outline.Language != expected.language || outline.Status != codeindex.StatusParsed ||
 				outline.FileRevision == nil || *outline.FileRevision != codeindex.Hash(source) || outline.Partial || outline.Truncated || !outline.Capabilities.Symbols {
@@ -189,11 +193,11 @@ func TestCodeIndexCommands(t *testing.T) {
 				}
 			}
 		}
-		data := acceptanceDo[protocol.CodeIndexOutline](t, node, protocol.Command{Kind: "outline_code", Data: protocol.CommandOutlineCodePayload{Worktree: main, Path: "settings.json"}})
+		data := nodetest.Do[protocol.CodeIndexOutline](t, node, protocol.Command{Kind: "outline_code", Data: protocol.CommandOutlineCodePayload{Worktree: main, Path: "settings.json"}})
 		if data.Language == nil || *data.Language != "json" || data.Status != codeindex.StatusUnsupported || len(data.Symbols) != 0 {
 			t.Fatalf("outline of settings.json: %+v", data)
 		}
-		_, failure := acceptanceCall[protocol.CodeIndexOutline](t, node, protocol.Command{Kind: "outline_code", Data: protocol.CommandOutlineCodePayload{Worktree: main, Path: "../outside.go"}})
+		_, failure := nodetest.Call[protocol.CodeIndexOutline](t, node, protocol.Command{Kind: "outline_code", Data: protocol.CommandOutlineCodePayload{Worktree: main, Path: "../outside.go"}})
 		if failure == nil {
 			t.Fatal("an outline outside the worktree was answered")
 		}
@@ -259,8 +263,8 @@ func TestCodeIndexCommands(t *testing.T) {
 		if found := codeSearch(t, node, main, protocol.CodeIndexSearch{Query: "nosuchsymbolanywhere"}).Symbols; len(found) != 0 {
 			t.Fatalf("an absent name found %+v", codeSymbols(found))
 		}
-		_, failure := acceptanceCall[protocol.CodeIndexSearchPage](t, node, protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: main, Query: protocol.CodeIndexSearch{Query: strings.Repeat("x", 4097), Limit: 20}}})
-		acceptanceFault(t, "oversized search", failure, protocol.ErrorCodeInvalidRequest, "invalid code search limits")
+		_, failure := nodetest.Call[protocol.CodeIndexSearchPage](t, node, protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: main, Query: protocol.CodeIndexSearch{Query: strings.Repeat("x", 4097), Limit: 20}}})
+		nodetest.RequireFault(t, "oversized search", failure, protocol.ErrorCodeInvalidRequest, "invalid code search limits")
 	})
 
 	t.Run("graph", func(t *testing.T) {
@@ -288,8 +292,8 @@ func TestCodeIndexCommands(t *testing.T) {
 		if !slices.Equal(paths, []string{"app/service.py", "cmd/server.go", "lib/index.rs", "src/page.ts"}) || ranked.Total != 4 {
 			t.Fatalf("map lists %v of %d", paths, ranked.Total)
 		}
-		_, failure := acceptanceCall[protocol.CodeIndexGraphGraphPage](t, node, protocol.Command{Kind: "graph_code", Data: protocol.CommandGraphCodePayload{Worktree: main, Query: protocol.CodeIndexGraph{View: protocol.CodeIndexGraphViewCallers, Paths: []string{}, Depth: 3, Limit: 50}}})
-		acceptanceFault(t, "callers without a symbol", failure, protocol.ErrorCodeInvalidRequest, "invalid code graph query")
+		_, failure := nodetest.Call[protocol.CodeIndexGraphGraphPage](t, node, protocol.Command{Kind: "graph_code", Data: protocol.CommandGraphCodePayload{Worktree: main, Query: protocol.CodeIndexGraph{View: protocol.CodeIndexGraphViewCallers, Paths: []string{}, Depth: 3, Limit: 50}}})
+		nodetest.RequireFault(t, "callers without a symbol", failure, protocol.ErrorCodeInvalidRequest, "invalid code graph query")
 	})
 
 	t.Run("incremental refresh", func(t *testing.T) {
@@ -323,12 +327,12 @@ func TestCodeIndexCommands(t *testing.T) {
 		if callers := codeCallers(codeGraph(t, node, main, protocol.CodeIndexGraphViewCallers, "helper")); !slices.Equal(callers, []string{"cmd/server.go:Extra", "cmd/server.go:Serve"}) {
 			t.Fatalf("callers after the edit: %v", callers)
 		}
-		outline := acceptanceDo[protocol.CodeIndexOutline](t, node, protocol.Command{Kind: "outline_code", Data: protocol.CommandOutlineCodePayload{Worktree: main, Path: "cmd/server.go"}})
+		outline := nodetest.Do[protocol.CodeIndexOutline](t, node, protocol.Command{Kind: "outline_code", Data: protocol.CommandOutlineCodePayload{Worktree: main, Path: "cmd/server.go"}})
 		if len(outline.Symbols) != 5 || outline.FileRevision == nil || *outline.FileRevision != codeindex.Hash(edited) {
 			t.Fatalf("outline after the edit: %+v", outline)
 		}
 		// An edit through the Node's own file command is picked up as well.
-		acceptanceDo[json.RawMessage](t, node, protocol.Command{Kind: "write_file", Data: protocol.CommandWriteFilePayload{Worktree: main, Path: "src/extra.ts", Text: "export function appended(): number {\n  return 1;\n}\n"}})
+		nodetest.Do[json.RawMessage](t, node, protocol.Command{Kind: "write_file", Data: protocol.CommandWriteFilePayload{Worktree: main, Path: "src/extra.ts", Text: "export function appended(): number {\n  return 1;\n}\n"}})
 		if found := codeSymbols(codeSearch(t, node, main, protocol.CodeIndexSearch{Query: "appended"}).Symbols); !slices.Equal(found, []codeSymbol{{"src/extra.ts", "appended", "function", 0}}) {
 			t.Fatalf("a file written through the Node was not indexed: %+v", found)
 		}
@@ -346,18 +350,18 @@ func TestCodeIndexCommands(t *testing.T) {
 			}
 			files[fmt.Sprintf("bulk/file%03d.go", file)] = source.String()
 		}
-		bulkRoot, _ := codeProject(t, files)
-		bulk := acceptanceDo[protocol.Project](t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
+		bulkRoot, _ := nodetest.GitProject(t, files)
+		bulk := nodetest.Do[protocol.Project](t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
 			Name: "Bulk fixture", Path: bulkRoot, Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance(),
 		}})
 		configure(project.ID, bulk.ID)
-		worktree := codeMain(t, node, bulk.ID)
+		worktree := nodetest.MainWorktree(t, node, bulk.ID)
 		request := protocol.NewRequest(node.ID(), protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: worktree, Query: protocol.CodeIndexSearch{Query: "Bulk", Limit: 20}}})
 		accepted, err := node.Dispatch(t.Context(), node.ID(), request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		deadline := time.Now().Add(acceptanceWait)
+		deadline := time.Now().Add(nodetest.Wait)
 		for running := false; !running; {
 			running = sdktest.Inspect(node).CodeQueryRunning(node.ID(), request.ID)
 			if !running {
@@ -373,16 +377,16 @@ func TestCodeIndexCommands(t *testing.T) {
 			}
 		}
 		started := time.Now()
-		cancelled := acceptanceDo[protocol.OutputCodeIndexQueryCancelledPayload](t, node, protocol.Command{Kind: "cancel_code_index_query", Data: protocol.CommandCancelCodeIndexQueryPayload{Request: request.ID}})
+		cancelled := nodetest.Do[protocol.OutputCodeIndexQueryCancelledPayload](t, node, protocol.Command{Kind: "cancel_code_index_query", Data: protocol.CommandCancelCodeIndexQueryPayload{Request: request.ID}})
 		if cancelled.Request != request.ID {
 			t.Fatalf("cancellation answered for %s", cancelled.Request)
 		}
 		select {
 		case response := <-accepted.Completion:
-			acceptanceFault(t, "cancelled running query", response.Fault, protocol.ErrorCodeCancelled, "code query was cancelled")
+			nodetest.RequireFault(t, "cancelled running query", response.Fault, protocol.ErrorCodeCancelled, "code query was cancelled")
 			t.Logf("a running query stopped %s after its cancellation", time.Since(started).Round(time.Millisecond))
-		case <-time.After(acceptanceWait):
-			t.Fatalf("the cancelled query did not stop within %s", acceptanceWait)
+		case <-time.After(nodetest.Wait):
+			t.Fatalf("the cancelled query did not stop within %s", nodetest.Wait)
 		}
 		remaining := sdktest.Inspect(node).CodeQueryCount()
 		if remaining != 0 {
@@ -390,14 +394,14 @@ func TestCodeIndexCommands(t *testing.T) {
 		}
 		// A cancellation that arrives first stops its query on admission.
 		early := protocol.NewRequest(node.ID(), protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: worktree, Query: protocol.CodeIndexSearch{Query: "Bulk", Limit: 20}}})
-		acceptanceDo[protocol.OutputCodeIndexQueryCancelledPayload](t, node, protocol.Command{Kind: "cancel_code_index_query", Data: protocol.CommandCancelCodeIndexQueryPayload{Request: early.ID}})
-		_, failure := acceptanceRequest[protocol.CodeIndexSearchPage](t, node, early, acceptanceWait)
-		acceptanceFault(t, "query cancelled early", failure, protocol.ErrorCodeCancelled, "code query was cancelled")
+		nodetest.Do[protocol.OutputCodeIndexQueryCancelledPayload](t, node, protocol.Command{Kind: "cancel_code_index_query", Data: protocol.CommandCancelCodeIndexQueryPayload{Request: early.ID}})
+		_, failure := nodetest.Request[protocol.CodeIndexSearchPage](t, node, early, nodetest.Wait)
+		nodetest.RequireFault(t, "query cancelled early", failure, protocol.ErrorCodeCancelled, "code query was cancelled")
 		// The interrupted index completes on later queries: reconcile works
 		// within a 15 s budget per query, so this wait is bounded at 60 s.
 		finish := time.Now().Add(60 * time.Second)
 		for {
-			page, failure := acceptanceRequest[protocol.CodeIndexSearchPage](t, node, protocol.NewRequest(node.ID(), protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: worktree, Query: protocol.CodeIndexSearch{Query: "Bulk239Function299", Limit: 20}}}), 30*time.Second)
+			page, failure := nodetest.Request[protocol.CodeIndexSearchPage](t, node, protocol.NewRequest(node.ID(), protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: worktree, Query: protocol.CodeIndexSearch{Query: "Bulk239Function299", Limit: 20}}}), 30*time.Second)
 			if failure != nil {
 				t.Fatalf("search after cancellation: %+v", failure)
 			}
@@ -417,12 +421,12 @@ func TestCodeIndexCommands(t *testing.T) {
 			t.Fatalf("the project has no index cache: %v", err)
 		}
 		var current protocol.Project
-		for _, known := range snapshotFixture(t, node).Projects {
+		for _, known := range nodetest.Snapshot(t, node).Projects {
 			if known.ID == bulk.ID {
 				current = known
 			}
 		}
-		acceptanceDo[json.RawMessage](t, node, protocol.Command{Kind: "remove_project", Data: protocol.CommandRemoveProjectPayload{Expected: current}})
+		nodetest.Do[json.RawMessage](t, node, protocol.Command{Kind: "remove_project", Data: protocol.CommandRemoveProjectPayload{Expected: current}})
 		if _, err := os.Stat(cache(worktree)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("the removed project kept its index cache: %v", err)
 		}
@@ -431,28 +435,28 @@ func TestCodeIndexCommands(t *testing.T) {
 	t.Run("settings", func(t *testing.T) {
 		configure(project.ID)
 		current := settings()
-		disabled := acceptanceDo[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "save_code_index_settings", Data: protocol.CommandSaveCodeIndexSettingsPayload{Settings: protocol.CodeIndexSettings{Revision: current.Revision, Enabled: false}, ExpectedRevision: current.Revision}})
+		disabled := nodetest.Do[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "save_code_index_settings", Data: protocol.CommandSaveCodeIndexSettingsPayload{Settings: protocol.CodeIndexSettings{Revision: current.Revision, Enabled: false}, ExpectedRevision: current.Revision}})
 		if disabled.Enabled || disabled.Revision != current.Revision+1 || disabled.PersistentProjects == nil || !slices.Equal(*disabled.PersistentProjects, []protocol.ProjectID{project.ID}) {
 			t.Fatalf("disabled settings %+v", disabled)
 		}
 		// The saved enablement applies before the save completes.
-		_, failure := acceptanceCall[protocol.CodeIndexSearchPage](t, node, protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: main, Query: protocol.CodeIndexSearch{Query: "Serve", Limit: 20}}})
-		acceptanceFault(t, "disabled search", failure, protocol.ErrorCodeNotConfigured, "code index is disabled")
-		_, failure = acceptanceCall[protocol.CodeIndexOutline](t, node, protocol.Command{Kind: "outline_code", Data: protocol.CommandOutlineCodePayload{Worktree: main, Path: "cmd/server.go"}})
-		acceptanceFault(t, "disabled outline", failure, protocol.ErrorCodeNotConfigured, "code index is disabled")
+		_, failure := nodetest.Call[protocol.CodeIndexSearchPage](t, node, protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: main, Query: protocol.CodeIndexSearch{Query: "Serve", Limit: 20}}})
+		nodetest.RequireFault(t, "disabled search", failure, protocol.ErrorCodeNotConfigured, "code index is disabled")
+		_, failure = nodetest.Call[protocol.CodeIndexOutline](t, node, protocol.Command{Kind: "outline_code", Data: protocol.CommandOutlineCodePayload{Worktree: main, Path: "cmd/server.go"}})
+		nodetest.RequireFault(t, "disabled outline", failure, protocol.ErrorCodeNotConfigured, "code index is disabled")
 		name := "helper"
-		_, failure = acceptanceCall[protocol.CodeIndexGraphGraphPage](t, node, protocol.Command{Kind: "graph_code", Data: protocol.CommandGraphCodePayload{Worktree: main, Query: protocol.CodeIndexGraph{View: protocol.CodeIndexGraphViewCallers, Name: &name, Paths: []string{}, Depth: 3, Limit: 50}}})
-		acceptanceFault(t, "disabled graph", failure, protocol.ErrorCodeNotConfigured, "code index is disabled")
+		_, failure = nodetest.Call[protocol.CodeIndexGraphGraphPage](t, node, protocol.Command{Kind: "graph_code", Data: protocol.CommandGraphCodePayload{Worktree: main, Query: protocol.CodeIndexGraph{View: protocol.CodeIndexGraphViewCallers, Name: &name, Paths: []string{}, Depth: 3, Limit: 50}}})
+		nodetest.RequireFault(t, "disabled graph", failure, protocol.ErrorCodeNotConfigured, "code index is disabled")
 		if _, err := os.Stat(filepath.Join(cache(main), "index.turso")); err != nil {
 			t.Fatalf("disabling removed the cache: %v", err)
 		}
-		_, failure = acceptanceCall[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "save_code_index_settings", Data: protocol.CommandSaveCodeIndexSettingsPayload{Settings: protocol.CodeIndexSettings{Revision: 0, Enabled: true}, ExpectedRevision: 0}})
-		acceptanceFault(t, "stale settings", failure, protocol.ErrorCodeRevisionConflict, "code index settings changed before saving")
-		enabled := acceptanceDo[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "save_code_index_settings", Data: protocol.CommandSaveCodeIndexSettingsPayload{Settings: protocol.CodeIndexSettings{Revision: disabled.Revision, Enabled: true}, ExpectedRevision: disabled.Revision}})
+		_, failure = nodetest.Call[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "save_code_index_settings", Data: protocol.CommandSaveCodeIndexSettingsPayload{Settings: protocol.CodeIndexSettings{Revision: 0, Enabled: true}, ExpectedRevision: 0}})
+		nodetest.RequireFault(t, "stale settings", failure, protocol.ErrorCodeRevisionConflict, "code index settings changed before saving")
+		enabled := nodetest.Do[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "save_code_index_settings", Data: protocol.CommandSaveCodeIndexSettingsPayload{Settings: protocol.CodeIndexSettings{Revision: disabled.Revision, Enabled: true}, ExpectedRevision: disabled.Revision}})
 		if !enabled.Enabled || enabled.Revision != disabled.Revision+1 || enabled.PersistentProjects == nil || !slices.Equal(*enabled.PersistentProjects, []protocol.ProjectID{project.ID}) {
 			t.Fatalf("enabled settings %+v", enabled)
 		}
-		page, failure := acceptanceCall[protocol.CodeIndexSearchPage](t, node, protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: main, Query: protocol.CodeIndexSearch{Query: "Serve", Limit: 20}}})
+		page, failure := nodetest.Call[protocol.CodeIndexSearchPage](t, node, protocol.Command{Kind: "search_code", Data: protocol.CommandSearchCodePayload{Worktree: main, Query: protocol.CodeIndexSearch{Query: "Serve", Limit: 20}}})
 		if failure != nil {
 			t.Fatalf("search after enabling again: %+v", failure)
 		}
@@ -466,7 +470,7 @@ func TestCodeIndexCommands(t *testing.T) {
 
 	t.Run("worktree removal", func(t *testing.T) {
 		destination := filepath.Join(filepath.Dir(root), "feature-worktree")
-		created := acceptanceDo[protocol.Worktree](t, node, protocol.Command{Kind: "create_worktree", Data: protocol.CommandCreateWorktreePayload{Project: project.ID, Path: destination, Branch: "feature", Commit: commit}})
+		created := nodetest.Do[protocol.Worktree](t, node, protocol.Command{Kind: "create_worktree", Data: protocol.CommandCreateWorktreePayload{Project: project.ID, Path: destination, Branch: "feature", Commit: commit}})
 		// The new worktree holds the committed fixture, not the later edits.
 		if found := codeSymbols(codeSearch(t, node, created.ID, protocol.CodeIndexSearch{Query: "build"}).Symbols); !slices.Equal(found, []codeSymbol{{"lib/index.rs", "build", "function", 4}}) {
 			t.Fatalf("the second worktree found %+v", found)
@@ -474,7 +478,7 @@ func TestCodeIndexCommands(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(cache(created.ID), "index.turso")); err != nil {
 			t.Fatalf("the worktree has no index cache: %v", err)
 		}
-		acceptanceDo[json.RawMessage](t, node, protocol.Command{Kind: "remove_worktree", Data: protocol.CommandRemoveWorktreePayload{Worktree: created.ID, ExpectedHead: commit, ExpectedBranch: "feature"}})
+		nodetest.Do[json.RawMessage](t, node, protocol.Command{Kind: "remove_worktree", Data: protocol.CommandRemoveWorktreePayload{Worktree: created.ID, ExpectedHead: commit, ExpectedBranch: "feature"}})
 		// The cache is deleted before the removal completes.
 		if _, err := os.Stat(cache(created.ID)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("the removed worktree's index cache remains: %v", err)
@@ -485,11 +489,11 @@ func TestCodeIndexCommands(t *testing.T) {
 	})
 
 	t.Run("host persistence supersedes legacy choices", func(t *testing.T) {
-		otherRoot, _ := codeProject(t, codeFixture)
-		other := acceptanceDo[protocol.Project](t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
+		otherRoot, _ := nodetest.GitProject(t, codeFixture)
+		other := nodetest.Do[protocol.Project](t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
 			Name: "Another code fixture", Path: otherRoot, Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance(),
 		}})
-		otherMain := codeMain(t, node, other.ID)
+		otherMain := nodetest.MainWorktree(t, node, other.ID)
 		current := settings()
 		if current.Persistent == nil || !*current.Persistent || current.PersistentProjects == nil || !slices.Equal(*current.PersistentProjects, []protocol.ProjectID{project.ID}) {
 			t.Fatalf("legacy opt-in settings %+v", current)
@@ -499,7 +503,7 @@ func TestCodeIndexCommands(t *testing.T) {
 			t.Fatalf("legacy choices affected a second project: %+v", page)
 		}
 		for _, enabled := range []bool{false, true} {
-			current = acceptanceDo[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "save_code_index_settings", Data: protocol.CommandSaveCodeIndexSettingsPayload{
+			current = nodetest.Do[protocol.CodeIndexSettings](t, node, protocol.Command{Kind: "save_code_index_settings", Data: protocol.CommandSaveCodeIndexSettingsPayload{
 				Settings: protocol.CodeIndexSettings{Revision: current.Revision, Enabled: true, Persistent: new(enabled)}, ExpectedRevision: current.Revision,
 			}})
 			if current.Persistent == nil || *current.Persistent != enabled || current.PersistentProjects == nil || !slices.Equal(*current.PersistentProjects, []protocol.ProjectID{project.ID}) {
@@ -532,7 +536,7 @@ func TestCodeIndexCommands(t *testing.T) {
 		if found := codeFingerprints(t, database, foreign); !slices.Equal(found, []string{foreign}) {
 			t.Fatalf("the index was not rewritten: %v", found)
 		}
-		second := acceptanceNode(t, profile, nil, Options{Assembly: codehost.Assembly()})
+		second := nodetest.Start(t, profile, nil, native.Options{Assembly: assembly})
 		after := codeSearch(t, second, main, protocol.CodeIndexSearch{Limit: 100})
 		if !slices.Equal(codeSymbols(after.Symbols), codeSymbols(before.Symbols)) || after.IndexRevision <= before.IndexRevision {
 			t.Fatalf("a foreign fingerprint was not rebuilt: revision %d after %d, symbols %+v", after.IndexRevision, before.IndexRevision, codeSymbols(after.Symbols))
@@ -551,7 +555,7 @@ func TestCodeIndexCommands(t *testing.T) {
 		original := codeindex.Fingerprint
 		codeindex.Fingerprint = codeindex.Hash("code-index-v1:gotreesitter:next-rules")
 		defer func() { codeindex.Fingerprint = original }()
-		third := acceptanceNode(t, profile, nil, Options{Assembly: codehost.Assembly()})
+		third := nodetest.Start(t, profile, nil, native.Options{Assembly: assembly})
 		defer third.Stop(context.Background())
 		rebuilt := codeSearch(t, third, main, protocol.CodeIndexSearch{Limit: 100})
 		if !slices.Equal(codeSymbols(rebuilt.Symbols), codeSymbols(before.Symbols)) || rebuilt.IndexRevision <= after.IndexRevision {
@@ -570,47 +574,49 @@ func TestCodeIndexCommands(t *testing.T) {
 // native code-index module tool.
 func TestCodeAgentTools(t *testing.T) {
 	requireCodeIndex(t)
+	assembly := native.Assembly{Modules: []native.Module{codeindex.Module(), filesnode.Module()}}
 	search, outline := "code_search", "code_outline"
 	codeContext, impact, ranked := "code_context", "code_impact", "code_map"
 	pipeline := "code_pipeline"
 	tools := []string{search, outline, codeContext, impact, ranked, pipeline}
-	script := &acceptanceScript{steps: []acceptanceStep{
-		{"discover", "tool_search", acceptanceArguments(map[string]any{"query": "select:" + strings.Join(tools, ",")})},
-		{"search", search, acceptanceArguments(map[string]any{"query": "Serve"})},
-		{"outline", outline, acceptanceArguments(map[string]any{"path": "cmd/server.go"})},
-		{"context", codeContext, acceptanceArguments(map[string]any{"name": "helper"})},
-		{"impact", impact, acceptanceArguments(map[string]any{"name": "helper"})},
-		{"map", ranked, acceptanceArguments(map[string]any{})},
-		{"baseline_search", search, acceptanceArguments(map[string]any{"name": "helper", "limit": 8})},
-		{"baseline_read", "read_file", acceptanceArguments(map[string]any{"path": "cmd/server.go", "offset": 16, "limit": 1})},
-		{"pipeline", pipeline, acceptanceArguments(json.RawMessage(`{"steps":[{"operation":"code.search","arguments":{"name":"helper"}},{"operation":"files.read_lines","arguments":{"limit":1},"from_previous":{"path":"/symbols/0/path","offset":"/symbols/0/range/start_line","expected_revision":"/symbols/0/file_revision"}}],"select":"/lines/0/text"}`))},
-		{id: "answer"},
-	}}
-	node := acceptanceNode(t, filepath.Join(t.TempDir(), "profile"), script, Options{Assembly: codehost.Assembly()})
+	steps := []nodetest.Step{
+		nodetest.Step{ID: "discover", Tool: "tool_search", Arguments: nodetest.Arguments(map[string]any{"query": "select:" + strings.Join(tools, ",")})},
+		nodetest.Step{ID: "search", Tool: search, Arguments: nodetest.Arguments(map[string]any{"query": "Serve"})},
+		nodetest.Step{ID: "outline", Tool: outline, Arguments: nodetest.Arguments(map[string]any{"path": "cmd/server.go"})},
+		nodetest.Step{ID: "context", Tool: codeContext, Arguments: nodetest.Arguments(map[string]any{"name": "helper"})},
+		nodetest.Step{ID: "impact", Tool: impact, Arguments: nodetest.Arguments(map[string]any{"name": "helper"})},
+		nodetest.Step{ID: "map", Tool: ranked, Arguments: nodetest.Arguments(map[string]any{})},
+		nodetest.Step{ID: "baseline_search", Tool: search, Arguments: nodetest.Arguments(map[string]any{"name": "helper", "limit": 8})},
+		nodetest.Step{ID: "baseline_read", Tool: "read_file", Arguments: nodetest.Arguments(map[string]any{"path": "cmd/server.go", "offset": 16, "limit": 1})},
+		nodetest.Step{ID: "pipeline", Tool: pipeline, Arguments: nodetest.Arguments(json.RawMessage(`{"steps":[{"operation":"code.search","arguments":{"name":"helper"}},{"operation":"files.read_lines","arguments":{"limit":1},"from_previous":{"path":"/symbols/0/path","offset":"/symbols/0/range/start_line","expected_revision":"/symbols/0/file_revision"}}],"select":"/lines/0/text"}`))},
+		nodetest.Step{ID: "answer"},
+	}
+	script := nodetest.NewScript(steps...)
+	node := nodetest.Start(t, filepath.Join(t.TempDir(), "profile"), script, native.Options{Assembly: assembly})
 	defer node.Stop(context.Background())
-	root, _ := codeProject(t, codeFixture)
-	project := acceptanceDo[protocol.Project](t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
+	root, _ := nodetest.GitProject(t, codeFixture)
+	project := nodetest.Do[protocol.Project](t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
 		Name: "Code fixture", Path: root, Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance(),
 	}})
-	session := acceptanceSession(t, node, project.ID, protocol.PermissionAsk)
+	session := nodetest.ProjectSession(t, node, project.ID, protocol.PermissionAsk)
 	// No approval is expected: every code tool is read-only.
-	frozen, results := acceptanceTurn(t, node, session, "Explain how the server starts", acceptanceWait, nil)
+	frozen, results := nodetest.Turn(t, node, session, "Explain how the server starts", nodetest.Wait, nil)
 	if slices.ContainsFunc(frozen, func(reference protocol.PluginReference) bool { return reference.Name == "code" }) {
 		t.Fatalf("the default profile should not freeze the retired code package: %+v", frozen)
 	}
-	requests := script.requests()
-	if len(requests) != len(script.steps) {
-		t.Fatalf("the turn made %d model requests, want %d", len(requests), len(script.steps))
+	requests := script.Requests()
+	if len(requests) != len(steps) {
+		t.Fatalf("the turn made %d model requests, want %d", len(requests), len(steps))
 	}
 	t.Logf("discovery answered: %s", results["discover"].Result.Value)
 	for _, tool := range tools {
 		// The model reads a package tool under its declared name.
-		if !slices.Contains(requests[1], declaredToolName(tool)) {
+		if !slices.Contains(requests[1], nodetest.DeclaredToolName(tool)) {
 			t.Errorf("%s was not offered after discovery; offered %v", tool, requests[1])
 		}
 	}
 
-	found := acceptanceResult(t, results, "search", search)
+	found := nodetest.Result(t, results, "search", search)
 	t.Logf("code_search: %s", results["search"].Result.Value)
 	data, _ := found["data"].(map[string]any)
 	symbols, _ := data["symbols"].([]any)
@@ -629,7 +635,7 @@ func TestCodeAgentTools(t *testing.T) {
 		t.Fatalf("code_search exposed the visit count: %v", data)
 	}
 
-	listed := acceptanceResult(t, results, "outline", outline)
+	listed := nodetest.Result(t, results, "outline", outline)
 	t.Logf("code_outline: %s", results["outline"].Result.Value)
 	data, _ = listed["data"].(map[string]any)
 	lines := map[string][2]float64{}
@@ -650,7 +656,7 @@ func TestCodeAgentTools(t *testing.T) {
 			t.Logf("%s: status %v: %s", call, response.Status, response.Result.Value)
 		}
 	}
-	related := acceptanceResult(t, results, "context", codeContext)
+	related := nodetest.Result(t, results, "context", codeContext)
 	if related["isError"] == true {
 		t.Fatalf("code_context failed: %v", related)
 	}
@@ -670,7 +676,7 @@ func TestCodeAgentTools(t *testing.T) {
 		t.Fatalf("code_context found caller %v", caller)
 	}
 
-	affected := acceptanceResult(t, results, "impact", impact)
+	affected := nodetest.Result(t, results, "impact", impact)
 	if affected["isError"] == true {
 		t.Fatalf("code_impact failed: %v", affected)
 	}
@@ -693,18 +699,18 @@ func TestCodeAgentTools(t *testing.T) {
 		t.Fatalf("code_impact affected %v in %v", names, file)
 	}
 
-	selected := acceptanceResult(t, results, "pipeline", pipeline)
+	selected := nodetest.Result(t, results, "pipeline", pipeline)
 	if value, ok := selected["value"].(string); !ok || strings.TrimSpace(value) != "func helper(address string) {" || len(selected) > 2 {
 		t.Fatalf("code_pipeline did not isolate the selected source line: %v", selected)
 	}
-	baseline := acceptanceResult(t, results, "baseline_read", "read_file")
+	baseline := nodetest.Result(t, results, "baseline_read", "read_file")
 	baselineText := baseline["data"].(map[string]any)["lines"].([]any)[0].(map[string]any)["text"]
 	if selected["value"] != baselineText {
 		t.Fatalf("pipeline and ordinary read returned different source lines: %v and %v", selected, baseline)
 	}
 	t.Logf("Same lookup, tool result bytes: separate search and read %d, pipeline %d", len(results["baseline_search"].Result.Value)+len(results["baseline_read"].Result.Value), len(results["pipeline"].Result.Value))
 
-	overview := acceptanceResult(t, results, "map", ranked)
+	overview := nodetest.Result(t, results, "map", ranked)
 	if overview["isError"] == true {
 		t.Fatalf("code_map failed: %v", overview)
 	}
@@ -718,56 +724,58 @@ func TestCodeAgentTools(t *testing.T) {
 	}
 }
 
-func TestCodeAgentToolsWithoutIndex(t *testing.T) {
-	pipeline := "code_pipeline"
-	read := "read_file"
-	requested := []string{pipeline, read, "code_search", "code_outline", "code_context", "code_impact", "code_map"}
-	script := &acceptanceScript{steps: []acceptanceStep{
-		{"discover", "tool_search", acceptanceArguments(map[string]any{"query": "select:" + strings.Join(requested, ","), "limit": len(requested)})},
-		{"pipeline", pipeline, acceptanceArguments(json.RawMessage(`{"steps":[{"operation":"files.find","arguments":{"globs":["cmd/server.go"]}},{"operation":"files.read_lines","arguments":{"limit":1},"from_previous":{"path":"/paths/0"}}],"select":"/lines/0/text"}`))},
-		{id: "answer"},
-	}}
-	assembly := codehost.Assembly()
-	assembly.CodeIndex = nil
-	node := acceptanceNode(t, filepath.Join(t.TempDir(), "profile"), script, Options{Assembly: assembly})
-	t.Cleanup(func() {
-		if err := node.Stop(context.Background()); err != nil {
-			t.Error(err)
-		}
-	})
-	root, _ := codeProject(t, codeFixture)
-	project := acceptanceDo[protocol.Project](t, node, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
-		Name: "Code fixture", Path: root, Source: protocol.ProjectsSource{Kind: "local"}, Appearance: protocol.DefaultProjectsAppearance(),
-	}})
-	session := acceptanceSession(t, node, project.ID, protocol.PermissionAsk)
-	frozen, results := acceptanceTurn(t, node, session, "Read the first line of the server source", acceptanceWait, nil)
-	if slices.ContainsFunc(frozen, func(reference protocol.PluginReference) bool { return reference.Name == "code" }) {
-		t.Fatalf("the default profile should not freeze the retired code package: %+v", frozen)
-	}
-	if !slices.ContainsFunc(frozen, func(reference protocol.PluginReference) bool { return reference.Name == "files" }) {
-		t.Fatalf("the default profile did not freeze the files package: %+v", frozen)
-	}
+var codeFixture = map[string]string{
+	"cmd/server.go": `package main
 
-	requests := script.requests()
-	if len(requests) != len(script.steps) {
-		t.Fatalf("the turn made %d model requests, want %d", len(requests), len(script.steps))
-	}
-	var initial []string
-	for _, tool := range requests[0] {
-		name := declaredToolName(tool)
-		if slices.ContainsFunc(requested, func(alias string) bool { return declaredToolName(alias) == name }) {
-			initial = append(initial, name)
-		}
-	}
-	slices.Sort(initial)
-	if want := []string{"code_pipeline", "read_file"}; !slices.Equal(initial, want) {
-		t.Fatalf("initial request without an index offered %v among the requested tools, want %v", initial, want)
-	}
-	discovered := acceptanceResult(t, results, "discover", "tool_search")
-	if tools, ok := discovered["tools"].([]any); !ok || len(tools) != 0 {
-		t.Fatalf("tool discovery without an index returned %v, want an empty tools array", discovered)
-	}
-	if result := acceptanceResult(t, results, "pipeline", pipeline); strings.TrimSpace(fmt.Sprint(result["value"])) != "package main" {
-		t.Fatalf("file-only pipeline returned %v", result)
-	}
+// Config holds the listen address.
+type Config struct {
+	Address string
+}
+
+func main() {
+	Serve(Config{Address: ":8080"})
+}
+
+// Serve starts the listener.
+func Serve(config Config) {
+	helper(config.Address)
+}
+
+func helper(address string) {
+	_ = address
+}
+`,
+	"app/service.py": `class Service:
+    def run(self):
+        return compute(2)
+
+
+def compute(value):
+    return value * 2
+`,
+	"src/page.ts": `export function format(value: string): string {
+  return value.trim();
+}
+
+export class Page {
+  render(): string {
+    return format(" page ");
+  }
+}
+`,
+	"lib/index.rs": `pub struct Index {
+    pub entries: usize,
+}
+
+pub fn build() -> Index {
+    open()
+}
+
+fn open() -> Index {
+    Index { entries: 0 }
+}
+`,
+	"settings.json": `{"name": "fixture", "port": 8080}
+`,
+	"README.md": "# Fixture\n\nA small project in several languages.\n",
 }

@@ -1,28 +1,31 @@
-package node
+package sshnode_test
 
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/sailry/sailry-harness/sdk/native/link"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
 	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"github.com/sailry/sailry-harness/sdk/sdktest"
 	protocol "github.com/sailry/sailry-harness/sdk/sdktest/protocol"
-	"lukechampine.com/blake3"
 )
 
-// testSSHPrimary exercises the real Node admission, sharing and save paths;
+// TestSSHPrimary exercises the real Node admission, sharing and save paths;
 // network effects are translated and authorized without contacting a server.
-func testSSHPrimary(t *testing.T, node *Node, ordinary protocol.Session, primary protocol.SshProfile, declarations map[protocol.ToolOperation]sdktest.Declaration) {
-	t.Helper()
+func TestSSHPrimary(t *testing.T) {
+	t.Parallel()
+	node, ordinary, primary, held := sshConnectionFixture(t)
+	ordinaryTurn := nodetest.HoldTurn(t, node, ordinary, held.Started)
+	declarations := nodetest.ConnectionDeclarations(nodetest.ConnectionTools(t, node, ordinaryTurn))
 	ctx := t.Context()
 	const secret = "private-ssh-primary-regression"
-	other := commandFixture(t, node, protocol.Command{Kind: "save_ssh", Data: protocol.CommandSaveSshPayload{
+	other := nodetest.Command(t, node, protocol.Command{Kind: "save_ssh", Data: protocol.CommandSaveSshPayload{
 		Profile:    protocol.SshProfile{ID: protocol.NewSshID(), Name: "Other private host", Host: "other.fixture.test", Port: 22, Username: "deploy", Authentication: protocol.SshAuthenticationPassword},
 		Credential: &protocol.SshCredential{Kind: "password", Data: &protocol.SshCredentialPasswordPayload{Password: protocol.NewSecret(secret)}},
 	}}).Data.(protocol.SshProfile)
@@ -30,15 +33,15 @@ func testSSHPrimary(t *testing.T, node *Node, ordinary protocol.Session, primary
 	config.Resource = &protocol.ConnectionResource{Kind: "ssh", Data: primary.ID}
 	owner := declarations[protocol.ToolOperationSaveSshConnection].Owner
 	const entry = "dev.sailry.platform/desktop/main.js"
-	sshPlugin := installPluginFixture(t, node, "ssh", map[string]string{
+	sshPlugin := nodetest.InstallPlugin(t, node, "ssh", map[string]string{
 		"plugin.json": `{"$schema":"` + sdktest.ManifestSchema + `","name":"ssh","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","scope":"host","requires_modules":["ssh"],"actions":["ssh.read","ssh.control","ssh.manage","conversation.read","conversation.control","projects.read"],"desktop":{"entry":"` + entry + `","resources":["` + entry + `"],"conversations":[{"id":"ssh","resource":"ssh","tools":[{"kind":"plugin","name":"ssh_run"},{"kind":"plugin","name":"ssh_transfer"},{"kind":"plugin","name":"ssh_connections"},{"kind":"plugin","name":"ssh_save_connection"}],"context":"Manage the selected SSH connection."}]}}}}`,
 		entry:         `export function create() { return {}; }`,
 	})
 	config.Assistant = &protocol.PluginConversationBinding{Package: sdktest.PackageReference(sshPlugin), ID: "ssh"}
-	session := commandFixture(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &config}}).Data.(protocol.Session)
+	session := nodetest.Command(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &config}}).Data.(protocol.Session)
 	controller := protocol.NodeID{93}
-	trustedCallerFixture(t, node, controller)
-	admitted := dispatchFixture(t, node, controller, protocol.NewRequest(node.ID(), protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{Session: session.ID, ExpectedRevision: session.Revision, Message: protocol.ConversationInput{Text: "Manage another SSH connection"}}}))
+	nodetest.TrustCaller(t, node, controller)
+	admitted := nodetest.Dispatch(t, node, controller, protocol.NewRequest(node.ID(), protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{Session: session.ID, ExpectedRevision: session.Revision, Message: protocol.ConversationInput{Text: "Manage another SSH connection"}}}))
 	if admitted.Fault != nil {
 		t.Fatal(admitted.Fault)
 	}
@@ -90,7 +93,7 @@ func testSSHPrimary(t *testing.T, node *Node, ordinary protocol.Session, primary
 	scope := protocol.PluginContext{Package: owner, Turn: &turn.ID, Session: &session.ID, Worktree: &session.Worktree, Surface: protocol.PluginDesktopSurface{Kind: "workspace"}}
 	list := protocol.NewRequest(node.ID(), protocol.Command{Kind: "list_ssh"})
 	list.Plugin = &scope
-	listed := dispatchFixture(t, node, node.ID(), list)
+	listed := nodetest.Dispatch(t, node, node.ID(), list)
 	if listed.Fault != nil {
 		t.Fatal(listed.Fault)
 	}
@@ -124,13 +127,18 @@ func testSSHPrimary(t *testing.T, node *Node, ordinary protocol.Session, primary
 	}
 	save := func(command protocol.Command) (protocol.Output, *protocol.Fault) {
 		t.Helper()
-		response := connectionSaveFixture(t, node, scope, declarations[protocol.ToolOperationSaveSshConnection], command)
+		response := nodetest.SaveConnection(t, node, scope, declarations[protocol.ToolOperationSaveSshConnection], command, func(proof protocol.Command) {
+			input, valid := nodetest.Payload[protocol.CommandSaveSshPayload](proof.Data)
+			if !valid || input.Credential != nil {
+				t.Fatal("SSH save proof retained credentials")
+			}
+		})
 		return response.Output, response.Fault
 	}
 	edit := translate(protocol.ToolOperationSaveSshConnection, map[string]any{"connection": other.ID, "expected_revision": other.Revision, "name": "Renamed private host"})
 	unapproved := protocol.NewRequest(node.ID(), edit)
 	unapproved.Plugin = &scope
-	if _, err := node.Dispatch(ctx, node.ID(), unapproved); !pluginMessageFault(err, protocol.ErrorCodePermissionDenied) {
+	if _, err := node.Dispatch(ctx, node.ID(), unapproved); !nodetest.FaultIs(err, protocol.ErrorCodePermissionDenied) {
 		t.Fatalf("unapproved SSH edit was admitted: %v", err)
 	}
 	updated, fault := save(edit)
@@ -168,7 +176,7 @@ func testSSHPrimary(t *testing.T, node *Node, ordinary protocol.Session, primary
 	}
 	trust := protocol.NewRequest(node.ID(), protocol.Command{Kind: "trust_ssh", Data: protocol.CommandTrustSshPayload{Profile: added.ID, ExpectedRevision: added.Revision, Key: protocol.SshHostKey{Algorithm: "ssh-ed25519", Fingerprint: "SHA256:unapproved"}}})
 	trust.Plugin = &scope
-	if _, err := node.Dispatch(ctx, node.ID(), trust); !pluginMessageFault(err, protocol.ErrorCodePermissionDenied) {
+	if _, err := node.Dispatch(ctx, node.ID(), trust); !nodetest.FaultIs(err, protocol.ErrorCodePermissionDenied) {
 		t.Fatalf("SSH key was trusted without its fingerprint approval: %v", err)
 	}
 	if err := sdktest.Inspect(node).Store().Node.Read(ctx, func(db *sql.Conn) error {
@@ -189,7 +197,7 @@ func testSSHPrimary(t *testing.T, node *Node, ordinary protocol.Session, primary
 		}
 		_, credential, err := sdktest.ReadSsh(ctx, db, other.ID, other.Revision)
 		if err == nil {
-			password, valid := dispatchPayload[protocol.SshCredentialPasswordPayload](credential.Data)
+			password, valid := nodetest.Payload[protocol.SshCredentialPasswordPayload](credential.Data)
 			if credential.Kind != "password" || !valid || password.Password.Expose() != secret {
 				t.Error("an edit without credentials replaced the saved credential")
 			}
@@ -198,146 +206,49 @@ func testSSHPrimary(t *testing.T, node *Node, ordinary protocol.Session, primary
 	}); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// connectionSaveFixture uses an approval already claimed by the agent loop,
-// as the native tool does. Preflight must stay read-only; its proof belongs to
-// the committed save and must disappear when the save fails.
-func connectionSaveFixture(t *testing.T, node *Node, scope protocol.PluginContext, declaration sdktest.Declaration, command protocol.Command) link.Response {
-	t.Helper()
-	ctx := t.Context()
-	request := protocol.NewRequest(node.ID(), command)
-	request.Plugin = &scope
-	binding := sdktest.ApprovalBinding{Owner: scope.Package, Tool: declaration.Name, Operation: &declaration.Operation}
-	approval := claimedConnectionSave(t, node, request, binding)
-	if err := sdktest.Inspect(node).ValidatePluginRequest(ctx, node.ID(), request); err != nil {
-		t.Fatalf("approved save failed read-only preflight: %v", err)
-	}
-	prepared := func() string {
+	disabled := nodetest.Command(t, node, protocol.Command{Kind: "set_plugin_enabled", Data: protocol.CommandSetPluginEnabledPayload{
+		Name: sshPlugin.Summary.Name, ExpectedRevision: sshPlugin.Summary.Revision, Enabled: false,
+	}}).Data.(protocol.PluginInfo)
+	assertUnavailable := func(packageState string) {
 		t.Helper()
-		var body string
-		if err := sdktest.Inspect(node).Store().Node.Read(ctx, func(db *sql.Conn) error {
-			return db.QueryRowContext(ctx, "SELECT prepared FROM agent_approvals WHERE id=?1", approval.String()).Scan(&body)
-		}); err != nil {
-			t.Fatal(err)
-		}
-		return body
-	}
-	if body := prepared(); body != "null" {
-		t.Fatalf("preflight wrote a save proof: %s", body)
-	}
-	response := dispatchFixture(t, node, node.ID(), request)
-	if body := prepared(); response.Fault != nil {
-		if body != "null" {
-			t.Fatalf("failed save retained its proof: %s", body)
-		}
-	} else {
-		var proof struct {
-			Command protocol.Command `json:"command"`
-			Digest  string           `json:"digest"`
-		}
-		if err := json.Unmarshal([]byte(body), &proof); err != nil || proof.Command.Kind != command.Kind || proof.Digest == "" {
-			t.Fatalf("committed save lost its proof: %s, %v", body, err)
-		}
-		encoded, err := json.Marshal(command)
-		if err != nil || proof.Digest != fmt.Sprintf("%x", blake3.Sum256(encoded)) {
-			t.Fatalf("save proof did not bind the original credential-bearing command: %v", err)
-		}
-		switch proof.Command.Kind {
-		case "save_ssh":
-			input, valid := dispatchPayload[protocol.CommandSaveSshPayload](proof.Command.Data)
-			if !valid || input.Credential != nil {
-				t.Fatal("SSH save proof retained credentials")
-			}
-		case "save_database":
-			input, valid := dispatchPayload[protocol.CommandSaveDatabasePayload](proof.Command.Data)
-			if !valid || input.Password != nil {
-				t.Fatal("database save proof retained a password")
-			}
-		}
-		replayed := dispatchFixture(t, node, node.ID(), request)
-		first, err := json.Marshal(response)
-		if err != nil {
-			t.Fatal(err)
-		}
-		again, err := json.Marshal(replayed)
-		if err != nil || string(first) != string(again) || body != prepared() {
-			t.Fatalf("save replay changed its result or proof: %s, %s, %v", first, again, err)
+		request := protocol.NewRequest(node.ID(), protocol.Command{Kind: "submit_turn", Data: protocol.CommandSubmitTurnPayload{
+			Session: session.ID, ExpectedRevision: session.Revision, Message: protocol.ConversationInput{Text: "Reuse the legacy session"},
+		}})
+		if fault := nodetest.Dispatch(t, node, controller, request).Fault; fault == nil || fault.Code != protocol.ErrorCodeNotConfigured {
+			t.Fatalf("legacy SSH session started with its package %s: %+v", packageState, fault)
 		}
 	}
-	return response
-}
-
-func claimedConnectionSave(t *testing.T, node *Node, request protocol.Request, binding sdktest.ApprovalBinding) protocol.ApprovalID {
-	t.Helper()
-	ctx := t.Context()
-	approval := protocol.DefaultConversationApproval()
-	approval.ID, approval.Session, approval.Turn = protocol.NewApprovalID(), *request.Plugin.Session, *request.Plugin.Turn
-	approval.State, approval.Source = protocol.ConversationApprovalStateApproved, protocol.ConversationApprovalSourceUser
-	if err := sdktest.Inspect(node).Store().Node.Write(ctx, func(db *sql.Conn) error {
-		body, err := json.Marshal(approval)
+	assertUnavailable("disabled")
+	if installed := nodetest.Command(t, node, protocol.Command{Kind: "list_plugins"}).Data.([]protocol.PluginSummary); !slices.ContainsFunc(installed, func(summary protocol.PluginSummary) bool {
+		return summary.Name == disabled.Summary.Name && !summary.Enabled && summary.Digest == sshPlugin.Summary.Digest
+	}) {
+		t.Fatal("reopening the legacy session changed its disabled package")
+	}
+	nodetest.Command(t, node, nodetest.DecodeCommand(t, "remove_plugin", map[string]any{
+		"name": disabled.Summary.Name, "expected_revision": disabled.Summary.Revision,
+	}))
+	assertUnavailable("removed")
+	if err := sdktest.Inspect(node).Store().Node.Read(ctx, func(db *sql.Conn) error {
+		installed, err := sdktest.ReadPlugin(ctx, db, disabled.Summary.Name)
 		if err != nil {
 			return err
 		}
-		bound, err := json.Marshal(binding)
+		if installed != nil {
+			return errors.New("reopening the legacy session restored its removed package")
+		}
+		stored, err := sdktest.ReadSession(ctx, db, session.ID)
 		if err != nil {
 			return err
 		}
-		_, err = db.ExecContext(ctx, "INSERT INTO agent_approvals(id,turn,call,body,binding,request,claimed) VALUES(?1,?2,?3,?4,?5,?6,1)", approval.ID.String(), approval.Turn.String(), request.ID.String(), body, bound, request.ID.String())
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return approval.ID
-}
-
-func testDatabaseSaveProof(t *testing.T, node *Node, inv *native.AgentInvocation, declarations map[protocol.ToolOperation]sdktest.Declaration) {
-	t.Helper()
-	ctx := t.Context()
-	declaration := declarations[protocol.ToolOperationSaveDatabaseConnection]
-	scope := protocol.PluginContext{Package: declaration.Owner, Turn: &inv.Run.Turn, Session: &inv.Session.ID, Worktree: &inv.Session.Worktree, Surface: protocol.PluginDesktopSurface{Kind: "workspace"}}
-	password := protocol.NewSecret("database-save-proof-secret")
-	profile := protocol.DatabaseProfile{ID: protocol.NewDatabaseID(), Name: "", ReadOnly: true, Sharing: &protocol.ConnectionSharing{Kind: "projects", Data: []protocol.ProjectID{*inv.Session.Project}}, Connection: protocol.DatabaseConnection{Kind: "network", Data: &protocol.DatabaseConnectionNetworkPayload{
-		Engine: protocol.DatabaseEnginePostgres, Host: "proof.fixture.test", Port: 5432, Username: "reader", Database: "app", Tls: protocol.DatabaseTlsRequire,
-	}}}
-	command := protocol.Command{Kind: "save_database", Data: &protocol.CommandSaveDatabasePayload{Profile: profile, Password: &password}}
-	failed := connectionSaveFixture(t, node, scope, declaration, command)
-	if failed.Fault == nil || failed.Fault.Code != protocol.ErrorCodeInvalidRequest {
-		t.Fatalf("invalid database save returned %+v", failed)
-	}
-	if err := sdktest.Inspect(node).Store().Node.Read(ctx, func(db *sql.Conn) error {
-		stored, err := sdktest.ReadDatabase(ctx, db, profile.ID)
-		if err == nil && stored != nil {
-			t.Error("failed database save retained a profile")
+		history, err := sdktest.ReadConversation(ctx, db, session.ID, nil, 100)
+		if err != nil {
+			return err
 		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	profile.Name = "Created in this turn"
-	command.Data = &protocol.CommandSaveDatabasePayload{Profile: profile, Password: &password}
-	result := connectionSaveFixture(t, node, scope, declaration, command)
-	if result.Fault != nil {
-		t.Fatal(result.Fault)
-	}
-	saved, valid := dispatchPayload[protocol.DatabaseProfile](result.Output.Data)
-	if !valid || saved.ID != profile.ID || saved.Revision != 1 {
-		t.Fatalf("database save did not commit once: %+v", result)
-	}
-	if err := sdktest.Inspect(node).Store().Node.Read(ctx, func(db *sql.Conn) error {
-		created, err := sdktest.ConnectionCreated(ctx, db, inv.Run.Turn, declaration.Owner, protocol.ConnectionResource{Kind: "database", Data: saved.ID})
-		if err == nil && !created {
-			t.Error("the completed database save is unavailable in its creating turn")
+		if !reflect.DeepEqual(stored.Config.Assistant, session.Config.Assistant) || !slices.ContainsFunc(history.Page.Runs, func(run protocol.ConversationRun) bool { return run.Turn == turn.ID }) {
+			return errors.New("unavailable SSH plugin changed the legacy binding or history")
 		}
-		return err
+		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-	args, err := json.Marshal(map[string]any{"connection": saved.ID, "sql": "select 1", "row_limit": 1, "timeout_ms": 1000})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := sdktest.Inspect(node).ConnectionCommand(ctx, inv, declarations[protocol.ToolOperationQueryDatabase], args, nil); err != nil {
-		t.Fatalf("new database requires another turn to be captured: %v", err)
 	}
 }

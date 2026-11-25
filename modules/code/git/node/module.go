@@ -24,11 +24,17 @@ var loadCatalog = sync.OnceValues(func() (native.CatalogSpec, error) {
 
 type module struct{}
 
+var _ native.WorkspaceServiceProvider = module{}
+
 // Module returns the native Node module providing read-only Git agent tools.
 func Module() native.Module { return module{} }
 
 func (module) ID() string                { return "git" }
 func (module) ReplacesPlugins() []string { return []string{"git"} }
+
+func (module) WorkspaceServices() native.WorkspaceServices {
+	return native.WorkspaceServices{Git: true}
+}
 
 func (module) Catalog() []native.ToolMeta {
 	catalog, err := loadCatalog()
