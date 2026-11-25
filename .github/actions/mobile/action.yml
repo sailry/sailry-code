@@ -1,0 +1,36 @@
+name: Code Mobile workspace
+description: Install the pinned Flutter toolchain and verify Dart and Go use the same Harness revision
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/harness
+      id: harness
+    - name: Pinned Flutter version
+      id: flutter
+      shell: bash
+      run: |
+        set -euo pipefail
+        version=$(tr -d '[:space:]' < "$SAILRY_HARNESS_DIR/apps/mobile/.flutter-version")
+        [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+        printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+    - uses: subosito/flutter-action@fd55f4c5af5b953cc57a2be44cb082c8f6635e8e # v2.21.0
+      with:
+        flutter-version: ${{ steps.flutter.outputs.version }}
+        channel: stable
+        cache: true
+        pub-cache: true
+    - name: Resolve locked Dart dependencies
+      shell: bash
+      working-directory: apps/mobile
+      env:
+        HARNESS_REVISION: ${{ steps.harness.outputs.revision }}
+      run: |
+        set -euo pipefail
+        test ! -f pubspec_overrides.yaml || { echo 'CI must use the declared Dart dependencies, not local overrides' >&2; exit 1; }
+        flutter pub get --enforce-lockfile
+        dart run tool/prepare.dart
+        resolved=$(cd .dart_tool/harness && pwd -P)
+        test "$(git --no-pager -C "$resolved" rev-parse --verify HEAD)" = "$HARNESS_REVISION" ||
+          { echo 'Dart and Go pin different Harness revisions' >&2; exit 1; }
+        git diff --exit-code -- pubspec.lock
+        printf 'SAILRY_HARNESS_ROOT=%s\nSAILRY_HARNESS_REVISION=%s\n' "$SAILRY_HARNESS_DIR" "$HARNESS_REVISION" >> "$GITHUB_ENV"

@@ -1,0 +1,125 @@
+name: Code Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: go1.27.3
+  CGO_ENABLED: '0'
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - name: Code tag and product metadata agree
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          version=${GITHUB_REF_NAME#v}
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo 'The tag must be a release version' >&2; exit 1; }
+          product=$(sed -nE 's/^[[:space:]]*(const[[:space:]]+)?Version[[:space:]]*=[[:space:]]*"([^"]*)".*$/\2/p' internal/product/*.go)
+          id=$(sed -nE 's/^[[:space:]]*(const[[:space:]]+)?ID[[:space:]]*=[[:space:]]*"([^"]*)".*$/\2/p' internal/product/*.go)
+          desktop=$(jq -er .version cmd/sailry-code-desktop/mygo.json)
+          test "$id" = code && test "$product" = "$version" && test "$desktop" = "$version" ||
+            { echo 'The Code tag, product identity and Desktop metadata differ' >&2; exit 1; }
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  packages:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    with:
+      distribution: true
+    secrets:
+      APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+      SAILRY_SENTRY_DSN: ${{ secrets.SAILRY_SENTRY_DSN }}
+      SAILRY_TELEMETRY_KEY: ${{ secrets.SAILRY_TELEMETRY_KEY }}
+
+  draft:
+    needs: [version, packages]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/harness
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: 'code-{macos-*,windows,host-*}'
+          path: ${{ runner.temp }}/assets
+          merge-multiple: true
+      - name: Code update feed
+        working-directory: ${{ runner.temp }}/assets
+        env:
+          SAILRY_UPDATE_SIGNING_KEY: ${{ secrets.SAILRY_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          unset GOROOT
+          export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=0
+          mkdir ../unsigned
+          mv Sailry-aarch64-apple-darwin-unsigned.zip Sailry-x86_64-apple-darwin-unsigned.zip ../unsigned/
+          go -C "$GITHUB_WORKSPACE" run ./cmd/update-feed -version "$VERSION" -output "$PWD" \
+            "aarch64-apple-darwin=$RUNNER_TEMP/unsigned/Sailry-aarch64-apple-darwin-unsigned.zip" \
+            "x86_64-apple-darwin=$RUNNER_TEMP/unsigned/Sailry-x86_64-apple-darwin-unsigned.zip"
+      - name: Checksums and Code Host installer
+        working-directory: ${{ runner.temp }}/assets
+        run: |
+          set -euo pipefail
+          tar -xOf sailry-host-x86_64-unknown-linux-gnu.tar.gz ./install-host.sh > install-host.sh
+          grep -Fxq 'task_repository=https://github.com/sailry/sailry-code' install-host.sh
+          sha256sum install-host.sh > SHA256SUMS-installer
+          for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+            sha256sum "Sailry-$triple.dmg" "Sailry-$triple.zip" "Sailry-$triple.zip.update.json" > "SHA256SUMS-desktop-$triple"
+          done
+          sha256sum Sailry-x86_64-pc-windows-msvc-setup.exe Sailry-x86_64-pc-windows-msvc.zip > SHA256SUMS-desktop-x86_64-pc-windows-msvc
+          sha256sum --check SHA256SUMS-aarch64-apple-darwin SHA256SUMS-x86_64-apple-darwin \
+            SHA256SUMS-aarch64-unknown-linux-gnu SHA256SUMS-x86_64-unknown-linux-gnu
+      - name: Gather a draft without replacing historical assets
+        working-directory: ${{ runner.temp }}/assets
+        run: |
+          set -euo pipefail
+          tag=$GITHUB_REF_NAME
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            options=(--draft --verify-tag --title "Sailry Code $VERSION" --generate-notes)
+            case "$VERSION" in *-*) options+=(--prerelease) ;; esac
+            gh release create "$tag" "${options[@]}"
+          fi
+          release=$(gh release view "$tag" --json databaseId,isDraft)
+          test "$(jq -r .isDraft <<<"$release")" = true || { echo "$tag is already published; its assets stay unchanged" >&2; exit 1; }
+          gh api --paginate "repos/$GH_REPO/releases/$(jq -r .databaseId <<<"$release")/assets" \
+            --jq '.[] | [.name, .state, (.digest // "")] | @tsv' > ../existing.tsv
+          upload=()
+          for file in *; do
+            row=$(awk -F '\t' -v name="$file" '$1 == name' ../existing.tsv)
+            if test -z "$row"; then upload+=("$file"); continue; fi
+            sum=$(sha256sum "$file")
+            test "$row" = "$(printf '%s\tuploaded\tsha256:%s' "$file" "${sum%% *}")" ||
+              { echo "$file already exists with other content" >&2; exit 1; }
+          done
+          if test ${#upload[@]} -gt 0; then gh release upload "$tag" "${upload[@]}"; fi

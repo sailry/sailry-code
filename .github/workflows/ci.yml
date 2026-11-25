@@ -1,0 +1,356 @@
+name: Code CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      distribution:
+        description: Build signed distribution packages for the Code release caller
+        type: boolean
+        default: false
+    secrets:
+      APPLE_CERTIFICATE_P12:
+        required: false
+      APPLE_CERTIFICATE_PASSWORD:
+        required: false
+      APPLE_API_PRIVATE_KEY:
+        required: false
+      SAILRY_SENTRY_DSN:
+        required: false
+      SAILRY_TELEMETRY_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-ci-${{ github.ref }}-${{ inputs.distribution && 'release' || 'checks' }}
+  cancel-in-progress: ${{ !inputs.distribution }}
+
+env:
+  GOTOOLCHAIN: go1.27.3
+  CGO_ENABLED: '0'
+  SAILRY_REVISION: ${{ github.sha }}
+
+jobs:
+  checks:
+    needs: native
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    env:
+      SAILRY_TURSO_LIB: ${{ github.workspace }}/.runtime/native/linux-amd64/libturso_sync_sdk_kit.so
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - name: Closed workflow fixtures
+        run: python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'
+      - uses: ./.github/actions/harness
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: code-native-linux-amd64
+          path: .runtime/native/linux-amd64
+      - name: Verify Go test runtime
+        working-directory: .runtime/native/linux-amd64
+        run: |
+          set -euo pipefail
+          sha256sum --check SHA256SUMS
+          test -f "$SAILRY_TURSO_LIB"
+      - name: Format, vet and test the product module
+        run: |
+          set -euo pipefail
+          unset GOROOT
+          export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=0
+          files=$(git ls-files -z '*.go' | xargs -0 gofmt -l)
+          test -z "$files" || { printf 'gofmt differs:\n%s\n' "$files" >&2; exit 1; }
+          go vet ./...
+          go test ./...
+
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: linux-amd64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: macos-15, target: darwin-arm64 }
+          - { os: macos-15-intel, target: darwin-amd64 }
+          - { os: windows-2025, target: windows-amd64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: .runtime/harness
+    steps:
+      - name: Repository line endings
+        if: runner.os == 'Windows'
+        working-directory: ${{ github.workspace }}
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/harness
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: native
+        with:
+          path: .runtime/native/${{ matrix.target }}
+          key: code-native-v1-${{ matrix.target }}-${{ hashFiles('.runtime/harness/native/turso/Cargo.toml', '.runtime/harness/native/turso/Cargo.lock', '.runtime/harness/native/turso/rust-toolchain.toml', '.runtime/harness/native/turso/build.sh', '.runtime/harness/native/turso/src/**', '.runtime/harness/native/capture/**', '.runtime/harness/native/windows/crt.ps1') }}
+      - name: Pinned Rust toolchain
+        if: steps.native.outputs.cache-hit != 'true'
+        working-directory: .runtime/harness/native/turso
+        run: rustup toolchain install
+      - uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2.0.5
+        if: runner.os == 'Linux' && steps.native.outputs.cache-hit != 'true'
+        with:
+          version: 0.16.0
+          use-cache: true
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: runner.os == 'Linux' && steps.native.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cargo/bin/cargo-zigbuild
+          key: cargo-zigbuild-v1-${{ runner.os }}-${{ runner.arch }}-0.23.4
+      - name: Native libraries
+        if: steps.native.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          if test "$RUNNER_OS" = Linux; then
+            if test ! -x "$HOME/.cargo/bin/cargo-zigbuild"; then
+              cargo install cargo-zigbuild --version 0.23.4 --locked
+            fi
+            export SAILRY_GLIBC=2.34
+          fi
+          sh native/turso/build.sh
+          if test "$RUNNER_OS" != Linux; then sh native/capture/build.sh; fi
+      - name: Windows C++ runtime
+        if: runner.os == 'Windows' && steps.native.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./native/windows/crt.ps1
+      - name: Gather native libraries
+        if: steps.native.outputs.cache-hit != 'true'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cd ".runtime/native/$TARGET"
+          case "$RUNNER_OS" in
+            Windows)
+              set -- turso_sync_sdk_kit.dll sailry-capture.dll windows-crt.json
+              while IFS= read -r name; do set -- "$@" "$name"; done < <(jq -r '.files[]' windows-crt.json | tr -d '\r')
+              ;;
+            macOS) set -- libturso_sync_sdk_kit.dylib libsailry-capture.dylib ;;
+            *) set -- libturso_sync_sdk_kit.so ;;
+          esac
+          output="$GITHUB_WORKSPACE/.runtime/native/$TARGET"
+          mkdir -p "$output"
+          for name in "$@"; do
+            cp "$name" "$output/$name"
+            if command -v sha256sum >/dev/null; then sum=$(sha256sum "$name"); else sum=$(shasum -a 256 "$name"); fi
+            printf '%s  %s\n' "${sum%% *}" "$name"
+          done > "$output/SHA256SUMS"
+      - name: Verify native libraries
+        working-directory: .runtime/native/${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if command -v sha256sum >/dev/null; then sha256sum --check SHA256SUMS; else shasum -a 256 --check SHA256SUMS; fi
+          if test "$RUNNER_OS" = Linux; then
+            needed=$(objdump -T libturso_sync_sdk_kit.so | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -V | tail -n 1)
+            test "$(printf '%s\n%s\n' "$needed" 2.34 | sort -V | tail -n 1)" = 2.34
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: code-native-${{ matrix.target }}
+          path: .runtime/native/${{ matrix.target }}/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  macos:
+    needs: [checks, native]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, target: darwin-arm64, triple: aarch64-apple-darwin }
+          - { os: macos-15-intel, target: darwin-amd64, triple: x86_64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      SAILRY_SIGNING: ${{ inputs.distribution && 'developer-id' || 'ad-hoc' }}
+      SAILRY_NOTARIZE: ${{ inputs.distribution && '1' || '0' }}
+      APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+      SAILRY_SENTRY_DSN: ${{ secrets.SAILRY_SENTRY_DSN }}
+      SAILRY_TELEMETRY_KEY: ${{ secrets.SAILRY_TELEMETRY_KEY }}
+      SAILRY_RUST_LICENSES_CACHE: ${{ github.workspace }}/.runtime/licenses/turso-${{ matrix.triple }}
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/harness
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: licenses
+        with:
+          path: .runtime/licenses/turso-${{ matrix.triple }}
+          key: code-turso-licenses-v1-${{ matrix.triple }}-${{ hashFiles('.runtime/harness/native/turso/Cargo.toml', '.runtime/harness/native/turso/Cargo.lock', '.runtime/harness/internal/node/host/deployment/dependencies.jq', '.runtime/harness/internal/node/host/deployment/licenses.sh') }}
+      - name: Pinned Rust toolchain for notices
+        if: steps.licenses.outputs.cache-hit != 'true'
+        working-directory: .runtime/harness/native/turso
+        run: rustup toolchain install
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: code-native-${{ matrix.target }}
+          path: ${{ runner.temp }}/native
+      - name: Code signing credentials
+        if: inputs.distribution
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_CERTIFICATE_P12" && test -n "$APPLE_CERTIFICATE_PASSWORD" && test -n "$APPLE_API_PRIVATE_KEY" ||
+            { echo 'The Code macOS signing secrets are not configured' >&2; exit 1; }
+          umask 077
+          certificate=$RUNNER_TEMP/code-signing.p12
+          key=$RUNNER_TEMP/code-notary.p8
+          keychain=$RUNNER_TEMP/code-signing.keychain-db
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$certificate"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$key"
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          rm -f -- "$certificate"
+          printf 'APPLE_SIGNING_KEYCHAIN=%s\nAPPLE_API_KEY_PATH=%s\n' "$keychain" "$key" >> "$GITHUB_ENV"
+      - name: Code Desktop and Host
+        env:
+          TARGET: ${{ matrix.target }}
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          set -euo pipefail
+          bash cmd/sailry-code-desktop/macos/package.sh -artifacts "$RUNNER_TEMP/native"
+          bash cmd/sailry-code-host/package.sh -artifacts "$RUNNER_TEMP/native"
+          mkdir -p .runtime/release
+          cp ".runtime/package/out/$TARGET/Sailry-$TRIPLE.dmg" ".runtime/package/out/$TARGET/Sailry-$TRIPLE-unsigned.zip" \
+            ".runtime/host/$TRIPLE/sailry-host-$TRIPLE.tar.gz" ".runtime/host/$TRIPLE/SHA256SUMS-$TRIPLE" .runtime/release/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: code-macos-${{ matrix.triple }}
+          path: .runtime/release/
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+      - name: Remove Code signing credentials
+        if: always() && inputs.distribution
+        run: |
+          keychain=$RUNNER_TEMP/code-signing.keychain-db
+          if test -e "$keychain"; then security delete-keychain "$keychain"; fi
+          rm -f -- "$RUNNER_TEMP/code-signing.p12" "$RUNNER_TEMP/code-notary.p8"
+
+  windows:
+    needs: [checks, native]
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    env:
+      SAILRY_SENTRY_DSN: ${{ secrets.SAILRY_SENTRY_DSN }}
+      SAILRY_TELEMETRY_KEY: ${{ secrets.SAILRY_TELEMETRY_KEY }}
+      SAILRY_RUST_LICENSES_CACHE: ${{ github.workspace }}/.runtime/licenses/turso-x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/harness
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: licenses
+        with:
+          path: .runtime/licenses/turso-x86_64-pc-windows-msvc
+          key: code-turso-licenses-v1-x86_64-pc-windows-msvc-${{ hashFiles('.runtime/harness/native/turso/Cargo.toml', '.runtime/harness/native/turso/Cargo.lock', '.runtime/harness/internal/node/host/deployment/dependencies.jq', '.runtime/harness/internal/node/host/deployment/licenses.sh') }}
+      - name: Pinned Rust toolchain for notices
+        if: steps.licenses.outputs.cache-hit != 'true'
+        working-directory: .runtime/harness/native/turso
+        run: rustup toolchain install
+      - name: NSIS
+        run: |
+          sudo apt-get update -o Acquire::Languages=none
+          sudo apt-get install --no-install-recommends --yes nsis
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: code-native-windows-amd64
+          path: ${{ runner.temp }}/native
+      - name: Code Desktop
+        run: |
+          set -euo pipefail
+          bash cmd/sailry-code-desktop/windows/package.sh -artifacts "$RUNNER_TEMP/native"
+          mkdir -p .runtime/release
+          cp .runtime/package/out/windows-amd64/Sailry-x86_64-pc-windows-msvc-setup.exe \
+            .runtime/package/out/windows-amd64/Sailry-x86_64-pc-windows-msvc.zip .runtime/release/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: code-windows
+          path: .runtime/release/
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+
+  host-linux:
+    needs: [checks, native]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: linux-amd64, triple: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: linux-arm64, triple: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SAILRY_SENTRY_DSN: ${{ secrets.SAILRY_SENTRY_DSN }}
+      SAILRY_TELEMETRY_KEY: ${{ secrets.SAILRY_TELEMETRY_KEY }}
+      SAILRY_RUST_LICENSES_CACHE: ${{ github.workspace }}/.runtime/licenses/turso-${{ matrix.triple }}
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/harness
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: licenses
+        with:
+          path: .runtime/licenses/turso-${{ matrix.triple }}
+          key: code-turso-licenses-v1-${{ matrix.triple }}-${{ hashFiles('.runtime/harness/native/turso/Cargo.toml', '.runtime/harness/native/turso/Cargo.lock', '.runtime/harness/internal/node/host/deployment/dependencies.jq', '.runtime/harness/internal/node/host/deployment/licenses.sh') }}
+      - name: Pinned Rust toolchain for notices
+        if: steps.licenses.outputs.cache-hit != 'true'
+        working-directory: .runtime/harness/native/turso
+        run: rustup toolchain install
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: code-native-${{ matrix.target }}
+          path: ${{ runner.temp }}/native
+      - name: Code Host
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          set -euo pipefail
+          bash cmd/sailry-code-host/package.sh -artifacts "$RUNNER_TEMP/native"
+          mkdir -p .runtime/release
+          cp ".runtime/host/$TRIPLE/sailry-host-$TRIPLE.tar.gz" ".runtime/host/$TRIPLE/SHA256SUMS-$TRIPLE" .runtime/release/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: code-host-${{ matrix.triple }}
+          path: .runtime/release/
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0

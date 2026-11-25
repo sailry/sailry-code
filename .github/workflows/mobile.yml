@@ -1,0 +1,276 @@
+name: Code Mobile
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platforms to check and package
+        type: choice
+        options: [both, android, ios]
+        default: both
+      packages:
+        description: Build packages even when distribution signing settings are missing
+        type: boolean
+        default: false
+      upload:
+        description: Sign and upload only when all seven mobile signing secrets and platform settings are available
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-mobile-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: go1.27.3
+  CGO_ENABLED: '0'
+
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    outputs:
+      build_android: ${{ steps.policy.outputs.build_android }}
+      build_ios: ${{ steps.policy.outputs.build_ios }}
+      android_upload: ${{ steps.policy.outputs.android_upload }}
+      ios_upload: ${{ steps.policy.outputs.ios_upload }}
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - name: Select builds and credential-gated uploads
+        id: policy
+        env:
+          PLATFORM: ${{ inputs.platform }}
+          PACKAGES: ${{ inputs.packages }}
+          UPLOAD: ${{ inputs.upload }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          IOS_CERTIFICATE_P12: ${{ secrets.IOS_CERTIFICATE_P12 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+          ANDROID_SIGNING_SHA256: ${{ vars.ANDROID_SIGNING_SHA256 }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+        run: bash .github/scripts/mobile-policy.sh
+
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/mobile
+      - name: Analyze and test Code Mobile
+        working-directory: apps/mobile
+        run: |
+          flutter analyze
+          flutter test --concurrency=4
+
+  android:
+    needs: [policy, checks]
+    if: needs.policy.outputs.build_android == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      built: ${{ steps.build.outcome == 'success' && 'true' || 'false' }}
+      uploaded: ${{ steps.upload.outcome == 'success' && 'true' || 'false' }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SAILRY_NATIVE_DIR: ${{ github.workspace }}/apps/mobile/build/native/android-mobile-jni
+      ANDROID_SIGNING_SHA256: ${{ vars.ANDROID_SIGNING_SHA256 }}
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/mobile
+      - uses: ./.runtime/harness/.github/actions/android
+      - name: Android distribution keystore
+        if: needs.policy.outputs.android_upload == 'true'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keystore=$RUNNER_TEMP/code-mobile-release.jks
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          printf 'ANDROID_KEYSTORE_PATH=%s\nSAILRY_ANDROID_RELEASE=1\n' "$keystore" >> "$GITHUB_ENV"
+      - name: Build Android ARM64 APK
+        id: build
+        working-directory: apps/mobile
+        env:
+          ANDROID_STORE_PASSWORD: ${{ needs.policy.outputs.android_upload == 'true' && secrets.ANDROID_STORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ needs.policy.outputs.android_upload == 'true' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ needs.policy.outputs.android_upload == 'true' && secrets.ANDROID_KEY_PASSWORD || '' }}
+        run: flutter build apk --release --no-pub --target-platform android-arm64
+      - name: Verify distribution signer
+        if: needs.policy.outputs.android_upload == 'true'
+        run: |
+          set -euo pipefail
+          apk=apps/mobile/build/app/outputs/flutter-apk/app-release.apk
+          signer=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          expected=$(printf '%s' "$ANDROID_SIGNING_SHA256" | tr -d ': ' | tr 'A-F' 'a-f')
+          test -n "$signer" && test "$signer" = "$expected" || { echo 'The APK does not use the distribution signer' >&2; exit 1; }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        id: upload
+        if: needs.policy.outputs.android_upload == 'true'
+        with:
+          name: code-mobile-android
+          path: apps/mobile/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          compression-level: 0
+      - name: Remove Android signing files
+        if: always() && needs.policy.outputs.android_upload == 'true'
+        run: rm -f -- "$RUNNER_TEMP/code-mobile-release.jks"
+
+  ios:
+    needs: [policy, checks]
+    if: needs.policy.outputs.build_ios == 'true'
+    runs-on: macos-15
+    outputs:
+      built: ${{ steps.build.outcome == 'success' && 'true' || 'false' }}
+      uploaded: ${{ steps.upload.outcome == 'success' && 'true' || 'false' }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      SAILRY_NATIVE_DIR: ${{ github.workspace }}/apps/mobile/build/native/ios
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/mobile
+      - name: Configure iOS
+        working-directory: apps/mobile
+        run: |
+          printf 'SIGNING=%s/code-mobile-ios\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          flutter build ios --release --config-only --no-pub
+      - name: iOS distribution signing
+        if: needs.policy.outputs.ios_upload == 'true'
+        env:
+          IOS_CERTIFICATE_P12: ${{ secrets.IOS_CERTIFICATE_P12 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$SIGNING"
+          printf '%s' "$IOS_CERTIFICATE_P12" | base64 --decode > "$SIGNING/distribution.p12"
+          printf '%s' "$IOS_PROVISIONING_PROFILE" | base64 --decode > "$SIGNING/distribution.mobileprovision"
+          security cms -D -i "$SIGNING/distribution.mobileprovision" > "$SIGNING/profile.plist"
+          profile=$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$SIGNING/profile.plist")
+          test "$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$SIGNING/profile.plist")" = "$APPLE_TEAM_ID"
+          keychain=$SIGNING/distribution.keychain-db
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$SIGNING/distribution.p12" -k "$keychain" -P "$IOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          rm -f -- "$SIGNING/distribution.p12"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/^ *1) \([0-9A-F]\{40\}\) "Apple Distribution:.*/\1/p')
+          test -n "$identity" || { echo 'The certificate is not one Apple Distribution identity' >&2; exit 1; }
+          profiles="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          mkdir -p "$profiles"
+          cp "$SIGNING/distribution.mobileprovision" "$profiles/$profile.mobileprovision"
+          printf '%s' "$profile" > "$SIGNING/installed-profile"
+          project=apps/mobile/ios/Runner.xcodeproj/project.pbxproj
+          test "$(grep -c 'DEVELOPMENT_TEAM = ' "$project")" = 3
+          sed -i '' "s/^\([[:space:]]*\)DEVELOPMENT_TEAM = .*;\$/\1CODE_SIGN_STYLE = Manual; \"CODE_SIGN_IDENTITY[sdk=iphoneos*]\" = \"$identity\"; DEVELOPMENT_TEAM = $APPLE_TEAM_ID; PROVISIONING_PROFILE_SPECIFIER = \"$profile\";/" "$project"
+          plutil -lint "$project"
+          cat > "$SIGNING/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>export</string>
+            <key>teamID</key><string>$APPLE_TEAM_ID</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>$identity</string>
+            <key>provisioningProfiles</key><dict><key>com.sailry.sailryMobile</key><string>$profile</string></dict>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>stripSwiftSymbols</key><true/>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          PLIST
+          plutil -lint "$SIGNING/ExportOptions.plist"
+      - name: Build iOS package
+        id: build
+        env:
+          DISTRIBUTION: ${{ needs.policy.outputs.ios_upload }}
+        run: |
+          set -euo pipefail
+          if test "$DISTRIBUTION" = true; then
+            xcodebuild -workspace apps/mobile/ios/Runner.xcworkspace -scheme Runner -configuration Release \
+              -destination 'generic/platform=iOS' -archivePath "$PWD/apps/mobile/build/ios/archive/Runner.xcarchive" archive
+            xcodebuild -exportArchive -archivePath "$PWD/apps/mobile/build/ios/archive/Runner.xcarchive" \
+              -exportPath "$PWD/apps/mobile/build/ios/ipa" -exportOptionsPlist "$SIGNING/ExportOptions.plist"
+          else
+            (cd apps/mobile && flutter build ios --release --no-pub --no-codesign)
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: needs.policy.outputs.ios_upload == 'true'
+        with:
+          name: code-mobile-ios
+          path: apps/mobile/build/ios/ipa/*.ipa
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload iOS to TestFlight
+        id: upload
+        if: needs.policy.outputs.ios_upload == 'true'
+        env:
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          export API_PRIVATE_KEYS_DIR=$SIGNING/private_keys
+          mkdir -p "$API_PRIVATE_KEYS_DIR"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$API_PRIVATE_KEYS_DIR/AuthKey_$APPLE_API_KEY_ID.p8"
+          unset APPLE_API_PRIVATE_KEY
+          set -- apps/mobile/build/ios/ipa/*.ipa
+          test "$#" = 1 && test -f "$1"
+          if xcrun altool --help 2>&1 | grep -q -- '--upload-package'; then
+            xcrun altool --upload-package "$1" --wait --api-key "$APPLE_API_KEY_ID" --api-issuer "$APPLE_API_ISSUER_ID"
+          else
+            xcrun altool --upload-app -f "$1" -t ios --apiKey "$APPLE_API_KEY_ID" --apiIssuer "$APPLE_API_ISSUER_ID"
+          fi
+      - name: Remove iOS signing files
+        if: always() && needs.policy.outputs.ios_upload == 'true'
+        run: |
+          if test -f "$SIGNING/installed-profile"; then
+            rm -f -- "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$(cat "$SIGNING/installed-profile").mobileprovision"
+          fi
+          if test -e "$SIGNING/distribution.keychain-db"; then security delete-keychain "$SIGNING/distribution.keychain-db"; fi
+          rm -rf -- "$SIGNING"
+
+  summary:
+    needs: [policy, checks, android, ios]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - name: Report build and upload separately
+        env:
+          ANDROID_REQUESTED: ${{ needs.policy.outputs.build_android }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+          ANDROID_BUILT: ${{ needs.android.outputs.built }}
+          ANDROID_UPLOADED: ${{ needs.android.outputs.uploaded }}
+          IOS_REQUESTED: ${{ needs.policy.outputs.build_ios }}
+          IOS_RESULT: ${{ needs.ios.result }}
+          IOS_BUILT: ${{ needs.ios.outputs.built }}
+          IOS_UPLOADED: ${{ needs.ios.outputs.uploaded }}
+        run: bash .github/scripts/mobile-summary.sh

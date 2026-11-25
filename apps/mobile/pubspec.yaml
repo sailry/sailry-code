@@ -1,0 +1,37 @@
+name: sailry_code_mobile
+description: Sailry Code mobile controller
+publish_to: none
+version: 0.2.13+31
+
+environment:
+  sdk: '>=3.12.0 <4.0.0'
+  flutter: '>=3.44.7'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  sailry_mobile:
+    git:
+      url: https://github.com/sailry/sailry-harness.git
+      ref: 518dfa88354fc906e13b2d1139d89606b3d0d3aa
+      path: apps/mobile
+  sailry_bridge:
+    git:
+      url: https://github.com/sailry/sailry-harness.git
+      ref: 518dfa88354fc906e13b2d1139d89606b3d0d3aa
+      path: apps/mobile/packages/sailry_bridge
+  shared_preferences: 2.5.5
+
+dependency_overrides:
+  flutter_markdown_plus:
+    git:
+      url: https://github.com/sailry/flutter_markdown_plus.git
+      ref: eac4a6b2deebf50361b51b76ee3b2de13f23e219
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: 6.0.0
+
+flutter:
+  uses-material-design: true

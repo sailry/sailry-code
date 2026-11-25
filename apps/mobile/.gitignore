@@ -1,0 +1,12 @@
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.dart_tool/
+.flutter-plugins-dependencies
+.packages
+.pub/
+build/
+coverage/
+pubspec_overrides.yaml
