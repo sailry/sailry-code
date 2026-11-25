@@ -178,10 +178,8 @@ func (t *fileTree) request(name string, state *directoryPage, after *protocol.Di
 		state.read = nil
 		if state.refreshPending {
 			state.refreshPending = false
-			if !errors.Is(err, context.Canceled) {
-				t.refresh(name)
-				return
-			}
+			t.refresh(name)
+			return
 		}
 		if errors.Is(err, context.Canceled) {
 			return

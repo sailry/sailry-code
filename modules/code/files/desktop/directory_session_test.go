@@ -2,6 +2,8 @@ package desktop_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -9,10 +11,11 @@ import (
 	"github.com/egoist/mygo/ui"
 	support "github.com/sailry/sailry-code/internal/testsupport/desktop"
 	"github.com/sailry/sailry-harness/sdk/desktop/native"
+	fileproto "github.com/sailry/sailry-harness/sdk/native/protocol"
 	"github.com/sailry/sailry-harness/sdk/sdktest/protocol"
 )
 
-func TestFilesUnassignedSessionListsEmptyDirectoryOnce(t *testing.T) {
+func TestFilesTreeOfSessionWithoutProjectDoesNotReadOnIdleFrames(t *testing.T) {
 	w := openFiles(t)
 	provider := protocol.DefaultConversationProvider()
 	provider.ID, provider.Name, provider.Enabled = protocol.NewProviderID(), "Unassigned Files fixture", true
@@ -42,9 +45,17 @@ func TestFilesUnassignedSessionListsEmptyDirectoryOnce(t *testing.T) {
 		}
 	})
 
-	// A real workspace subscription sends an initial invalidation. Deliver it
-	// before showing the tree so this test measures an unchanged directory.
-	release, err := w.Controller.ObserveWorkspace(w.Ctx, session.Worktree, false, nil)
+	// Wait for the initial update to be delivered, not just for the connected
+	// flag: the Client sets that flag before it dispatches observer callbacks.
+	initial := make(chan struct{}, 1)
+	release, err := w.Controller.ObserveWorkspace(w.Ctx, session.Worktree, false, func(update fileproto.Update) {
+		if update.Kind == "files_changed" {
+			select {
+			case initial <- struct{}{}:
+			default:
+			}
+		}
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +64,13 @@ func TestFilesUnassignedSessionListsEmptyDirectoryOnce(t *testing.T) {
 		state, found := w.Controller.Workspace(session.Worktree, false)
 		return found && state.Connected && state.Err == nil
 	}
-	w.Await("the Node did not deliver its initial workspace observation", watching)
+	ready, cancel := context.WithTimeout(w.Ctx, 10*time.Second)
+	defer cancel()
+	select {
+	case <-initial:
+	case <-ready.Done():
+		t.Fatalf("the Node did not deliver its initial workspace observation: %v", ready.Err())
+	}
 	if dispatched.Load() != 0 {
 		t.Fatal("the workspace was listed before Files was opened")
 	}
@@ -64,7 +81,7 @@ func TestFilesUnassignedSessionListsEmptyDirectoryOnce(t *testing.T) {
 		observers++
 		return host.Observe(ctx)
 	}
-	workspace.FileDirectory.Read = func(ctx context.Context, path string, after *protocol.DirectoryCursor, done func(*ui.Context, protocol.Directory, error)) {
+	workspace.FileDirectory.Read = func(ctx context.Context, path string, after *fileproto.DirectoryCursor, done func(*ui.Context, fileproto.Directory, error)) {
 		reads++
 		if path != "" || after != nil {
 			t.Errorf("the first worktree listing requested path %q, cursor %+v", path, after)
@@ -86,4 +103,28 @@ func TestFilesUnassignedSessionListsEmptyDirectoryOnce(t *testing.T) {
 		t.Fatalf("unchanged empty Files page: %d root reads, %d Node listings, %d observers, connected=%t, visible=%q",
 			reads, sent, observers, watching(), w.Tester.Texts())
 	}
+
+	var root string
+	for _, worktree := range w.Controller.Snapshot().Worktrees {
+		if worktree.ID == session.Worktree {
+			root = worktree.Path
+			break
+		}
+	}
+	if root == "" {
+		t.Fatal("the session workspace has no Node path")
+	}
+	const changed = "created-after-idle.txt"
+	if err := os.WriteFile(filepath.Join(root, changed), []byte("A real workspace change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w.access(ui.RoleTreeItem, changed)
+	if reads <= 1 || dispatched.Load() <= 1 || !watching() {
+		t.Fatal("the mounted Files tree did not re-read the directory after the actual file creation")
+	}
+	w.App.Navigate(native.ConversationPage)
+	w.Await("leaving Files retained its directory observation", func() bool {
+		_, observing := w.Controller.Workspace(session.Worktree, false)
+		return !observing
+	})
 }

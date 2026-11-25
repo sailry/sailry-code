@@ -88,6 +88,7 @@ func TestFilesTreeSelectionAndKeys(t *testing.T) {
 			if got := selected(); !slices.Equal(got, []string{"fixture/docs/example.md", "fixture/internal", "fixture/internal/kit"}) {
 				t.Fatalf("Shift selected %q", got)
 			}
+			saveTreeShot(t, window)
 			window.Key(ui.Shift, ui.KeyDown)
 			window.Frame()
 			if got := selected(); !slices.Contains(got, "fixture/internal/kit/floating.go") || tree.sel.current != "fixture/internal/kit/floating.go" {
@@ -180,6 +181,57 @@ func TestFilesSampleActions(t *testing.T) {
 	}
 	if tree.sampleFile(native.FileAction{Kind: "files_open_system", Paths: []string{docs}}) {
 		t.Fatal("preview invoked the system")
+	}
+}
+
+func TestFilesTreeCoalescesRefreshWhileReading(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{{name: "stale result"}, {name: "canceled result", err: context.Canceled}} {
+		t.Run(test.name, func(t *testing.T) {
+			project := fixtures.NewProject("fixture", &fixtures.Workspace{}, &fixtures.Actions{})
+			var revision uint64
+			var reads []func(*ui.Context, protocol.Directory, error)
+			project.FileDirectory = native.FileDirectoryHost{
+				Name: "fixture", Context: t.Context(), Revision: func() uint64 { return revision },
+				Observe: func(context.Context) func() { return func() {} },
+				Read: func(_ context.Context, name string, after *protocol.DirectoryCursor, done func(*ui.Context, protocol.Directory, error)) {
+					if name != "" || after != nil {
+						t.Fatalf("unexpected directory request: %q, cursor %+v", name, after)
+					}
+					reads = append(reads, done)
+				},
+			}
+			tree := treeFor(project)
+			tree.mount()
+			defer tree.unmount()
+			page := tree.ensurePage("")
+			if len(reads) != 1 {
+				t.Fatalf("initial expansion sent %d reads, want one", len(reads))
+			}
+			for range 24 {
+				revision++
+				tree.update()
+				tree.ensurePage("")
+				tree.refresh("")
+			}
+			if len(reads) != 1 || !page.refreshPending {
+				t.Fatalf("invalidation during an in-flight read sent %d requests, pending=%t", len(reads), page.refreshPending)
+			}
+			reads[0](nil, protocol.Directory{Entries: []protocol.FileEntry{{Name: "stale.txt", Kind: protocol.EntryKindFile}}}, test.err)
+			if len(reads) != 2 || page.loaded || page.refreshPending {
+				t.Fatalf("settlement did not start exactly one follow-up: reads=%d, loaded=%t, pending=%t", len(reads), page.loaded, page.refreshPending)
+			}
+			reads[1](nil, protocol.Directory{Entries: []protocol.FileEntry{{Name: "current.txt", Kind: protocol.EntryKindFile}}}, nil)
+			for range 24 {
+				tree.update()
+				tree.ensurePage("")
+			}
+			if len(reads) != 2 || !page.loaded || len(page.entries) != 1 || page.entries[0].name != "current.txt" {
+				t.Fatalf("idle updates re-read the directory or published stale entries: reads=%d, entries=%+v", len(reads), page.entries)
+			}
+		})
 	}
 }
 
