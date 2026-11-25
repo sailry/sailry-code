@@ -10,7 +10,7 @@ import 'package:sailry_mobile/features/resources/file_page.dart';
 import 'package:sailry_mobile/features/resources/file_navigation.dart';
 import 'package:sailry_mobile/features/resources/files/breadcrumb.dart';
 import 'package:sailry_mobile/features/resources/files/entry_data.dart';
-import 'package:sailry_mobile/features/resources/files/entry_row.dart';
+import 'files/entry_row.dart';
 import 'package:sailry_mobile/ui/theme.dart';
 
 class FilesPage extends StatefulWidget {
