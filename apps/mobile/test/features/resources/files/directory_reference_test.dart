@@ -5,6 +5,8 @@ import 'package:sailry_code_mobile/features/resources/files_page.dart';
 import 'package:sailry_mobile/app.dart';
 import 'package:sailry_mobile/assembly/pages.dart';
 import 'package:sailry_mobile/features/conversations/live/references.dart';
+import 'package:sailry_mobile/features/resources/contributions.dart';
+import 'package:sailry_mobile/features/resources/file_page.dart';
 import 'package:sailry_mobile/features/resources/resources_page.dart';
 import 'package:sailry_mobile/l10n/strings.dart';
 import 'package:sailry_mobile/runtime/session.dart';
@@ -14,9 +16,7 @@ import 'package:sailry_mobile/ui/package_assets.dart';
 const _worktree = 'tree';
 
 void main() {
-  testWidgets('Files adds a project entry and opens directory references', (
-    tester,
-  ) async {
+  testWidgets('Files opens references on their captured Host', (tester) async {
     final calls = <(String, Map<String, dynamic>?)>[];
     final host = HostConnection.test(
       id: 'entry/fixture',
@@ -24,9 +24,11 @@ void main() {
       command: (kind, data) async {
         calls.add((kind, data));
         return {
-          'data': kind == 'list_directory'
-              ? {'entries': []}
-              : <String, dynamic>{},
+          'data': switch (kind) {
+            'list_directory' => {'entries': []},
+            'read_file' => {'text': 'Source host file', 'revision': 'r1'},
+            _ => <String, dynamic>{},
+          },
         };
       },
       snapshot: const {
@@ -43,10 +45,31 @@ void main() {
         ],
       },
     );
-    final session = AppSession.test(hosts: [host]);
+    final otherCalls = <String>[];
+    final other = HostConnection.test(
+      id: 'other-entry/other-target',
+      label: 'Other host',
+      command: (kind, _) async {
+        otherCalls.add(kind);
+        return {};
+      },
+      snapshot: const {
+        'worktrees': [
+          {'id': _worktree, 'path': '/unrelated'},
+        ],
+      },
+    );
+    final session = AppSession.test(hosts: [host, other]);
     final assembly = MobileAssembly(
       defaultRoute: projectsRoute,
-      resources: const [filesResource],
+      resources: [
+        ProjectResourceFeature(
+          openDirectory: (_, _, _, _) async {
+            fail('The declared directory handler must take precedence');
+          },
+        ),
+        filesResource,
+      ],
       pages: [
         MobilePage(
           id: chatRoute,
@@ -59,7 +82,11 @@ void main() {
               references: const [
                 {
                   'label': 'Source directory',
-                  'target': {'kind': 'directory', 'data': 'src'},
+                  'target': {'kind': 'directory', 'data': '/fixture/src'},
+                },
+                {
+                  'label': 'Source file',
+                  'target': {'kind': 'file', 'data': '/fixture/src/main.txt'},
                 },
               ],
             ),
@@ -85,6 +112,11 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('tab-$chatRoute')));
     await tester.pumpAndSettle();
+    session.selectHost(other.id);
+    await tester.pumpAndSettle();
+    expect(session.selectedHost, same(other));
+    expect(filesResource.links.map((link) => link.kind), ['file', 'directory']);
+
     await tester.tap(find.text('Source directory'));
     await tester.pumpAndSettle();
     final page = tester.widget<FilesPage>(find.byType(FilesPage));
@@ -97,6 +129,24 @@ void main() {
       'path': 'src',
       'after': null,
     });
+    Navigator.of(tester.element(find.byType(FilesPage))).pop();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Source file'));
+    await tester.pumpAndSettle();
+    final filePage = tester.widget<ResourceFilePage>(
+      find.byType(ResourceFilePage),
+    );
+    expect(
+      (filePage.host, filePage.worktree, filePage.path),
+      (host, _worktree, 'src/main.txt'),
+    );
+    expect(filePage.document.draft?.text, 'Source host file');
+    expect(calls.singleWhere((call) => call.$1 == 'read_file').$2, {
+      'worktree': _worktree,
+      'path': 'src/main.txt',
+    });
+    expect(otherCalls, isEmpty);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await session.close();
