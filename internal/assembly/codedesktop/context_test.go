@@ -1,185 +1,80 @@
 package codedesktop_test
 
 import (
-	"context"
-	"database/sql"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"errors"
 	"slices"
 	"testing"
-	"time"
 
-	"github.com/egoist/mygo/ui"
 	"github.com/sailry/sailry-code/internal/assembly/codedesktop"
 	"github.com/sailry/sailry-code/internal/assembly/codehost"
-	"github.com/sailry/sailry-harness/sdk/desktop/i18n"
+	support "github.com/sailry/sailry-code/internal/testsupport/desktop"
+	git "github.com/sailry/sailry-code/modules/code/git/desktop"
+	worktrees "github.com/sailry/sailry-code/modules/code/worktrees/desktop"
 	"github.com/sailry/sailry-harness/sdk/desktop/native"
-	fixtures "github.com/sailry/sailry-harness/sdk/desktop/testing"
 	"github.com/sailry/sailry-harness/sdk/native/node"
-	"github.com/sailry/sailry-harness/sdk/native/process"
-	"github.com/sailry/sailry-harness/sdk/native/protocol"
-	"github.com/sailry/sailry-harness/sdk/sdktest"
+	"github.com/sailry/sailry-harness/sdk/sdktest/protocol"
 )
 
 func TestProjectContextWithCodeHost(t *testing.T) {
-	profile := filepath.Join(t.TempDir(), "profile")
-	environment := process.NewEnvironment([]string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir()})
-	owner, err := node.StartWithOptions(t.Context(), profile, node.Options{Assembly: codehost.Assembly(), Environment: &environment})
-	if err != nil {
-		t.Fatal(err)
+	w := support.Open(t, codehost.Assembly(), codedesktop.Assembly())
+	if plugins := support.Result[[]protocol.PluginSummary](t, w.Do(protocol.Command{Kind: "list_plugins"})); len(plugins) != 0 {
+		t.Fatalf("a fresh Code profile must have zero plugins: %+v", plugins)
 	}
-	t.Cleanup(func() { _ = owner.Stop(context.Background()) })
-	source := t.TempDir()
-	manifest := `{"$schema":"` + sdktest.ManifestSchema + `","name":"commands","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","scope":"host","requires_modules":["terminal"]}}}`
-	if err := os.WriteFile(filepath.Join(source, "plugin.json"), []byte(manifest), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	commands, err := sdktest.Inspect(owner).InstallPlugin(t.Context(), source, "", "commands")
-	if err != nil || len(commands.Issues) != 0 {
-		t.Fatalf("commands fixture is invalid: %+v, %v", commands.Issues, err)
-	}
-	if err := sdktest.Inspect(owner).Store().Node.Write(t.Context(), func(db *sql.Conn) error {
-		_, err := sdktest.InstallPlugin(t.Context(), db, commands, 0, true)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	window, err := fixtures.Connect(t.Context(), owner, profile, codedesktop.Assembly())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = window.Close() })
-	plain, repository := t.TempDir(), t.TempDir()
-	if output, err := exec.Command("git", "-C", repository, "init", "-b", "main").CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, output)
-	}
-	for name, path := range map[string]string{"Plain folder": plain, "Git folder": repository} {
-		if _, err := window.Controller.Do(t.Context(), protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
-			Name: name, Path: path, Appearance: protocol.DefaultProjectsAppearance(), Source: protocol.ProjectsSource{Kind: "local"},
-		}}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	window.App.Navigate(native.ConversationPage)
-	window.App.Sidebar.NewChat()
-	tester := ui.NewTesterWith(window.App.View, 1280, 820, ui.TesterOptions{Preferences: ui.Preferences{ReduceTransparency: true}})
-	tester.SetLocale("en")
-	tester.SetScale(0.125)
-	controls := func() (bar []ui.AccessInfo) {
-		for _, info := range tester.AccessAll() {
-			if bounds := info.Bounds; info.Role == ui.RoleMenuButton && bounds.H == 24 && bounds.W > 0 && bounds.Y > native.HeaderHeight {
-				bar = append(bar, info)
-			}
-		}
-		return
-	}
-	names := func() (result []string) {
-		for _, info := range controls() {
-			result = append(result, info.Name)
-		}
-		return
-	}
-	await := func(message string, ready func() bool) {
-		t.Helper()
-		for end := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
-			tester.Advance(17 * time.Millisecond)
-			tester.Frame()
-			if ready() {
-				return
-			}
-			if time.Now().After(end) {
-				t.Fatalf("%s: controls %q, texts %q", message, names(), tester.Texts())
-			}
-		}
-	}
-	await("the initial chat has more than its project selector", func() bool {
-		return slices.Equal(names(), []string{i18n.In("en", "composer_no_project")}) && len(window.App.Data.Projects) == 2
-	})
-	choose := func(project string) {
-		t.Helper()
-		bar := controls()
-		tester.ClickAt(bar[0].Bounds.X+bar[0].Bounds.W/2, bar[0].Bounds.Y+bar[0].Bounds.H/2)
-		var item ui.AccessInfo
-		await("the location menu does not offer "+project, func() bool {
-			for _, role := range []ui.Role{ui.RoleMenuItem, ui.RoleMenuItemCheckBox, ui.RoleMenuItemRadio} {
-				if found, ok := tester.AccessByRole(role, project); ok {
-					item = found
-					return true
-				}
-			}
-			return false
-		})
-		tester.ClickAt(item.Bounds.X+item.Bounds.W/2, item.Bounds.Y+item.Bounds.H/2)
-	}
-	choose("Plain folder")
-	await("a plain directory offers a branch", func() bool { return slices.Equal(names(), []string{"Plain folder"}) })
-	choose("Git folder")
-	await("the Code Git context lacks its project or main branch", func() bool {
-		return slices.Equal(names(), []string{"Git folder", "main"})
-	})
-	bar := controls()
-	if bar[0].Bounds.Y != bar[1].Bounds.Y || bar[1].Bounds.X < bar[0].Bounds.X+bar[0].Bounds.W {
-		t.Errorf("the project %v and the branch %v are not side by side on one line", bar[0].Bounds, bar[1].Bounds)
-	}
-	label := func(key string) string { return i18n.In("en", key) }
-	menu := func() {
-		t.Helper()
-		tester.Frame()
-		for _, info := range tester.AccessAll() {
-			if bounds := info.Bounds; info.Name == "Git folder" && bounds.X >= native.RailWidth && bounds.X+bounds.W <= native.RailWidth+native.NavWidth {
-				tester.RightClickAt(bounds.X+bounds.W/2, bounds.Y+bounds.H/2)
-				tester.Frame()
-				return
-			}
-		}
-		t.Fatal("the sidebar has no Git project row")
-	}
-	menu()
-	want := []string{label("workspace_project"), label("project_edit"), "-", label("workspace_new_session"), label("workspace_new_terminal"),
+	project := w.CreateProject("Code workspace", t.TempDir())
+	label := support.Label
+	wantMenu := []string{label("workspace_project"), label("project_edit"), "-", label("workspace_new_session"), label("workspace_new_terminal"),
 		label("worktree_manage"), "-", label("workspace_copy_path"), "-", label("project_remove")}
-	if items := tester.Menu(); !slices.Equal(items, want) {
-		t.Fatalf("the Code project menu is %q, want %q", items, want)
+	if items := w.ProjectMenu(project.Name); !slices.Equal(items, wantMenu) {
+		t.Fatalf("the Code project menu is %q, want %q", items, wantMenu)
 	}
-	tester.Key(0, ui.KeyEscape)
-	actions := window.App.Sidebar.Actions
-	if actions.NewTerminal == nil || actions.Worktrees == nil {
+	w.Tester.CloseMenu()
+	actions := w.App.Sidebar.Actions
+	if actions == nil || len(actions.ProjectMenus) == 0 || !slices.ContainsFunc(actions.ProjectResources, func(action native.ProjectResourceAction) bool {
+		return action.Label == "workspace_new_terminal" && action.Open != nil
+	}) {
 		t.Fatal("Code did not bind the project terminal and worktree adapters")
 	}
-	terminalAction, worktreeAction := actions.NewTerminal, actions.Worktrees
-	t.Cleanup(func() { actions.NewTerminal, actions.Worktrees = terminalAction, worktreeAction })
-	var asked []string
-	actions.NewTerminal = func(project *fixtures.Project) { asked = append(asked, "terminal "+project.Name) }
-	actions.Worktrees = func(project *fixtures.Project, operation, _ string) {
-		asked = append(asked, operation+" "+project.Name)
-	}
-	menu()
-	if err := tester.ChooseMenuItem(label("workspace_new_terminal")); err != nil {
-		t.Fatal(err)
-	}
-	menu()
-	if err := tester.ChooseMenuItem(label("worktree_manage"), label("worktree_create")); err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(asked, []string{"terminal Git folder", "create Git folder"}) {
-		t.Fatalf("Code's project entries asked %q", asked)
-	}
-	for _, enabled := range []bool{false, true} {
-		if err := window.SetPluginEnabled(t.Context(), "commands", enabled); err != nil {
-			t.Fatal(err)
+	w.OpenProjectSession(project.ID)
+	var labels []string
+	for _, entry := range w.DetailsLauncherButtons() {
+		if entry.Disabled {
+			t.Errorf("the Code launcher disabled %q", entry.Name)
 		}
-		await("the commands package did not reach its selected state", func() bool {
-			for _, summary := range window.Controller.Snapshot().Plugins {
-				if summary.Name == "commands" {
-					return summary.Enabled == enabled
-				}
-			}
-			return false
-		})
-		menu()
-		if items := tester.Menu(); slices.Contains(items, label("workspace_new_terminal")) != enabled || !slices.Contains(items, label("worktree_manage")) {
-			t.Fatalf("the Code menu with commands enabled=%v is %q", enabled, items)
-		}
-		tester.Key(0, ui.KeyEscape)
+		labels = append(labels, entry.Name)
+	}
+	if want := []string{label("resource_browser"), label("terminal"), label("files"), label("git")}; !slices.Equal(labels, want) {
+		t.Fatalf("Code conversation launcher entries %q, want %q", labels, want)
+	}
+}
+
+func TestCodeTerminalWithoutModule(t *testing.T) {
+	host := codehost.Assembly()
+	host.Terminal = nil
+	host.Modules = slices.DeleteFunc(host.Modules, func(module node.Module) bool { return module.ID() == "terminal" })
+	w := support.Open(t, host, native.Assemble(git.Register, worktrees.Register))
+	project := w.CreateProject("No terminal module", t.TempDir())
+	w.App.Navigate(native.ConversationPage)
+	w.App.Sidebar.NewChat()
+	if actions := w.App.Sidebar.Actions; actions == nil || actions.NewTerminal != nil || len(actions.ProjectResources) != 0 ||
+		len(actions.ProjectMenus) == 0 || actions.ForkWorktree == nil || w.App.Panel.TerminalActions != nil {
+		t.Fatal("omitting the terminal module changed unrelated actions or bound terminal actions")
+	}
+	items := w.ProjectMenu(project.Name)
+	if slices.Contains(items, support.Label("workspace_new_terminal")) || !slices.Contains(items, support.Label("workspace_new_session")) {
+		t.Fatalf("the project menu without the terminal module is %q", items)
+	}
+	w.Tester.CloseMenu()
+	w.OpenProjectSession(project.ID)
+	launcher := w.DetailsLauncherButtons()
+	if len(launcher) != 1 || launcher[0].Name != support.Label("git") || launcher[0].Disabled {
+		t.Fatalf("the Git-only launcher should contain only an enabled Git entry: %+v", launcher)
+	}
+	_, err := w.Controller.Do(w.Ctx, protocol.Command{Kind: "read_terminal_settings"})
+	var fault *protocol.Fault
+	if !errors.As(err, &fault) || fault.Code != protocol.ErrorCodeNotConfigured {
+		t.Fatalf("the Node without the terminal module returned %v, want not_configured", err)
+	}
+	if terminals := w.Controller.Snapshot().Terminals; len(terminals) != 0 || len(w.App.WorkspaceTerminalIDs()) != 0 || len(w.App.Panel.Tabs) != 0 {
+		t.Fatalf("terminals appeared without the module: Node %+v, workspace %v, panel %v", terminals, w.App.WorkspaceTerminalIDs(), w.App.Panel.Tabs)
 	}
 }

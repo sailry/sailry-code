@@ -2,8 +2,11 @@
 package codedesktop
 
 import (
+	codeindex "github.com/sailry/sailry-code/modules/code/code-index/desktop"
 	git "github.com/sailry/sailry-code/modules/code/git/desktop"
+	ssh "github.com/sailry/sailry-code/modules/code/ssh/desktop"
 	terminal "github.com/sailry/sailry-code/modules/code/terminal/desktop"
+	worktrees "github.com/sailry/sailry-code/modules/code/worktrees/desktop"
 	browser "github.com/sailry/sailry-harness/modules/browser/desktop"
 	computer "github.com/sailry/sailry-harness/modules/computer/desktop"
 	connections "github.com/sailry/sailry-harness/modules/connections/desktop"
@@ -25,14 +28,14 @@ import (
 )
 
 func Assembly() desktop.Assembly {
-	assembly := desktop.Assemble(
-		files.Register, git.Register, market.Register,
+	return desktop.Assemble(
+		// SSH leads the rail after Conversation, where the SSH package's
+		// navigation entry was.
+		ssh.Register, files.Register, git.Register, market.Register,
+		codeindex.Register, worktrees.Register,
 		providers.Register, connectors.Register, teams.Register, skills.Register,
 		knowledge.Module(), memory.Register, media.Register, decision.Register,
 		terminal.Register, websearch.Register, browser.Register, computer.Register,
 		connections.Register, hooks.Register, runtime.Register, ocr.Register,
 	)
-	assembly.CodeIndex = true
-	assembly.Worktrees = true
-	return assembly
 }

@@ -28,9 +28,9 @@ func TestGitOpenSourceUsesRegisteredFilesPage(t *testing.T) {
 				Projects:  []*fixtures.Project{{ID: target.Project, Host: target.Node, Name: "Scoped project"}},
 				Workspace: &fixtures.Workspace{},
 			}
-			workspace := &fixtures.Workspace{
-				Files:   &fixtures.FileNode{Name: "Worktree", Children: []*fixtures.FileNode{{Name: path, Path: path}}},
-				Changes: []fixtures.FileChange{{Path: path, Status: "M", Unstaged: "M"}},
+			workspace := &fixtures.Workspace{Changes: []fixtures.FileChange{{Path: path, Status: "M", Unstaged: "M"}}}
+			if test.filesPage {
+				workspace.Files = &fixtures.FileNode{Name: "Worktree", Children: []*fixtures.FileNode{{Name: path, Path: path}}}
 			}
 			var read string
 			project := fixtures.NewProject(target.Worktree, workspace, &fixtures.Actions{ReadFile: func(path string) { read = path }})
@@ -39,7 +39,14 @@ func TestGitOpenSourceUsesRegisteredFilesPage(t *testing.T) {
 			if test.filesPage {
 				modules = append(modules, files.Register)
 			}
-			app := fixtures.NewLive(data, shell.Assemble(modules...))
+			assembly := shell.Assemble(modules...)
+			if len(assembly.SettingsPages) != 0 || assembly.HasPanelResource(shell.Terminal) || !assembly.HasPanelResource(shell.Changes) {
+				t.Fatal("Git must contribute its panel without unrelated features")
+			}
+			if pages := assembly.WorkspacePages; len(pages) != len(modules) || pages[0].Page != shell.GitPage || pages[0].Resource != shell.Changes || pages[0].RenderDetails == nil {
+				t.Fatalf("the Git module did not declare its own workspace resource: %+v", pages)
+			}
+			app := fixtures.NewLive(data, assembly)
 			app.Hooks.ResourceWorkspace = func(got fixtures.ResourceTarget) *shell.Project {
 				if got == target {
 					return project
@@ -64,6 +71,9 @@ func TestGitOpenSourceUsesRegisteredFilesPage(t *testing.T) {
 				t.Fatalf("change menu with Files installed = %v: %q", test.filesPage, items)
 			}
 			if !test.filesPage {
+				if app.NativePageEnabled(shell.FilesPage) || app.RevealResourceFile() != nil || read != "" {
+					t.Fatalf("Git alone enabled a Files route or read %q", read)
+				}
 				return
 			}
 			if err := tester.ChooseMenuItem(openSource); err != nil {
@@ -115,5 +125,29 @@ func TestGitPreviewOpenSource(t *testing.T) {
 				t.Fatalf("the source file did not open in Files: %q", tester.Texts())
 			}
 		})
+	}
+}
+
+func TestGitPageWithoutProject(t *testing.T) {
+	app := fixtures.NewLive(&fixtures.Data{Workspace: &fixtures.Workspace{}}, shell.Assemble(git.Register))
+	app.Navigate(shell.GitPage)
+	tester := ui.NewTesterWith(app.View, 1280, 820, ui.TesterOptions{Preferences: ui.Preferences{ReduceTransparency: true, ReduceMotion: true}})
+	tester.SetLocale("en")
+	tester.Frame()
+	text := func(key string) string { return i18n.In("en", key) }
+	if app.Page != shell.GitPage || !tester.HasText(text("resource_project_empty")) || tester.HasText(text("unavailable")) {
+		t.Fatalf("the Git page without a project did not offer project selection: %q", tester.Texts())
+	}
+	if err := tester.Click(text("project_new")); err != nil {
+		t.Fatal(err)
+	}
+	tester.Frame()
+	if !app.Sidebar.Editing() || !tester.HasText(text("project_name")) {
+		t.Fatalf("New project did not open the project editor: %q", tester.Texts())
+	}
+	tester.Key(0, ui.KeyEscape)
+	tester.Frame()
+	if app.Sidebar.Editing() {
+		t.Fatal("Escape left the project editor open")
 	}
 }
