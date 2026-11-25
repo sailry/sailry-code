@@ -5,10 +5,19 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      integration:
+        description: Run the SSH, database server and code-index integration suites
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       distribution:
         description: Build signed distribution packages for the Code release caller
+        type: boolean
+        default: false
+      integration:
+        description: Run the SSH, database server and code-index integration suites
         type: boolean
         default: false
     secrets:
@@ -70,6 +79,75 @@ jobs:
           test -z "$files" || { printf 'gofmt differs:\n%s\n' "$files" >&2; exit 1; }
           go vet ./...
           go test ./...
+
+  integration:
+    needs: native
+    if: inputs.integration || inputs.distribution
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: sailry_ci
+          POSTGRES_USER: sailry
+          POSTGRES_PASSWORD: ci-postgres-fixture
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U sailry -d sailry_ci"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: sailry_ci
+          MYSQL_USER: sailry
+          MYSQL_PASSWORD: ci-mysql-fixture
+          MYSQL_ROOT_PASSWORD: ci-root-fixture
+        ports:
+          - 3306/tcp
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -u root -pci-root-fixture"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+    env:
+      SAILRY_TURSO_LIB: ${{ github.workspace }}/.runtime/native/linux-amd64/libturso_sync_sdk_kit.so
+      SAILRY_TEST_POSTGRES_HOST: 127.0.0.1
+      SAILRY_TEST_POSTGRES_DATABASE: sailry_ci
+      SAILRY_TEST_POSTGRES_USERNAME: sailry
+      SAILRY_TEST_POSTGRES_PASSWORD: ci-postgres-fixture
+      SAILRY_TEST_POSTGRES_TLS: disable
+      SAILRY_TEST_MYSQL_HOST: 127.0.0.1
+      SAILRY_TEST_MYSQL_DATABASE: sailry_ci
+      SAILRY_TEST_MYSQL_USERNAME: sailry
+      SAILRY_TEST_MYSQL_PASSWORD: ci-mysql-fixture
+      SAILRY_TEST_MYSQL_TLS: disable
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/harness
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: code-native-linux-amd64
+          path: .runtime/native/linux-amd64
+      - name: Verify integration runtime
+        working-directory: .runtime/native/linux-amd64
+        run: |
+          set -euo pipefail
+          sha256sum --check SHA256SUMS
+          test -f "$SAILRY_TURSO_LIB"
+      - name: SSH, database and code-index integration tests
+        env:
+          SAILRY_TEST_POSTGRES_PORT: ${{ job.services.postgres.ports['5432'] }}
+          SAILRY_TEST_MYSQL_PORT: ${{ job.services.mysql.ports['3306'] }}
+        run: |
+          set -euo pipefail
+          unset GOROOT
+          export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=0
+          go test -p 1 -timeout 20m -tags integration \
+            ./modules/code/ssh/service ./modules/code/databases/service ./modules/code/code-index/node ./internal/node
 
   native:
     strategy:
@@ -188,8 +266,8 @@ jobs:
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
       APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
       APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
-      SAILRY_SENTRY_DSN: ${{ secrets.SAILRY_SENTRY_DSN }}
-      SAILRY_TELEMETRY_KEY: ${{ secrets.SAILRY_TELEMETRY_KEY }}
+      SAILRY_SENTRY_DSN: ${{ inputs.distribution && secrets.SAILRY_SENTRY_DSN || '' }}
+      SAILRY_TELEMETRY_KEY: ${{ inputs.distribution && secrets.SAILRY_TELEMETRY_KEY || '' }}
       SAILRY_RUST_LICENSES_CACHE: ${{ github.workspace }}/.runtime/licenses/turso-${{ matrix.triple }}
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
@@ -245,6 +323,7 @@ jobs:
           cp ".runtime/package/out/$TARGET/Sailry-$TRIPLE.dmg" ".runtime/package/out/$TARGET/Sailry-$TRIPLE-unsigned.zip" \
             ".runtime/host/$TRIPLE/sailry-host-$TRIPLE.tar.gz" ".runtime/host/$TRIPLE/SHA256SUMS-$TRIPLE" .runtime/release/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.distribution
         with:
           name: code-macos-${{ matrix.triple }}
           path: .runtime/release/
@@ -265,8 +344,8 @@ jobs:
       run:
         shell: bash
     env:
-      SAILRY_SENTRY_DSN: ${{ secrets.SAILRY_SENTRY_DSN }}
-      SAILRY_TELEMETRY_KEY: ${{ secrets.SAILRY_TELEMETRY_KEY }}
+      SAILRY_SENTRY_DSN: ${{ inputs.distribution && secrets.SAILRY_SENTRY_DSN || '' }}
+      SAILRY_TELEMETRY_KEY: ${{ inputs.distribution && secrets.SAILRY_TELEMETRY_KEY || '' }}
       SAILRY_RUST_LICENSES_CACHE: ${{ github.workspace }}/.runtime/licenses/turso-x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
@@ -298,6 +377,7 @@ jobs:
           cp .runtime/package/out/windows-amd64/Sailry-x86_64-pc-windows-msvc-setup.exe \
             .runtime/package/out/windows-amd64/Sailry-x86_64-pc-windows-msvc.zip .runtime/release/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.distribution
         with:
           name: code-windows
           path: .runtime/release/
@@ -318,8 +398,8 @@ jobs:
       run:
         shell: bash
     env:
-      SAILRY_SENTRY_DSN: ${{ secrets.SAILRY_SENTRY_DSN }}
-      SAILRY_TELEMETRY_KEY: ${{ secrets.SAILRY_TELEMETRY_KEY }}
+      SAILRY_SENTRY_DSN: ${{ inputs.distribution && secrets.SAILRY_SENTRY_DSN || '' }}
+      SAILRY_TELEMETRY_KEY: ${{ inputs.distribution && secrets.SAILRY_TELEMETRY_KEY || '' }}
       SAILRY_RUST_LICENSES_CACHE: ${{ github.workspace }}/.runtime/licenses/turso-${{ matrix.triple }}
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
@@ -348,6 +428,7 @@ jobs:
           mkdir -p .runtime/release
           cp ".runtime/host/$TRIPLE/sailry-host-$TRIPLE.tar.gz" ".runtime/host/$TRIPLE/SHA256SUMS-$TRIPLE" .runtime/release/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.distribution
         with:
           name: code-host-${{ matrix.triple }}
           path: .runtime/release/

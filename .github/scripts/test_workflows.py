@@ -29,6 +29,7 @@ class HarnessRevisionTests(unittest.TestCase):
         cls.source = cls.root / "source"
         cls.source.mkdir()
         cls.git = shutil.which("git")
+        cls.jq = shutil.which("jq")
         cls.environment = {
             **os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_ALLOW_PROTOCOL": "file", "GIT_TERMINAL_PROMPT": "0", "HOME": str(cls.root),
@@ -57,6 +58,15 @@ elif args == ["mod", "download", "-json", "github.com/sailry/sailry-harness@" + 
 else:
     raise SystemExit("Unexpected Go command in closed fixture: " + repr(args))
 ''')
+        cls.tool("jq", '''import os, subprocess, sys
+result = subprocess.run([os.environ["FIXTURE_JQ"], *sys.argv[1:]], input=sys.stdin.buffer.read(), capture_output=True)
+output = result.stdout
+if os.environ.get("FIXTURE_JQ_CRLF") == "1":
+    output = output.replace(b"\\n", b"\\r\\n")
+sys.stdout.buffer.write(output)
+sys.stderr.buffer.write(result.stderr)
+raise SystemExit(result.returncode)
+''')
         cls.tool("git", '''import json, os, subprocess, sys
 from pathlib import Path
 args = sys.argv[1:]
@@ -83,7 +93,7 @@ raise SystemExit(subprocess.run([os.environ["FIXTURE_GIT"], *args]).returncode)
         path.write_text(f"#!{sys.executable}\n" + source)
         path.chmod(0o755)
 
-    def resolve(self, version="v0.1.0", origin=None, replace=False, dependency_version=None):
+    def resolve(self, version="v0.1.0", origin=None, replace=False, dependency_version=None, crlf=False):
         log = self.root / "git-log.jsonl"
         log.write_text("")
         metadata = {"Require": [{"Path": MODULE, "Version": version}]}
@@ -97,6 +107,7 @@ raise SystemExit(subprocess.run([os.environ["FIXTURE_GIT"], *args]).returncode)
             "TMPDIR": str(self.root), "FIXTURE_METADATA": json.dumps(metadata),
             "FIXTURE_DEPENDENCY": json.dumps(dependency), "FIXTURE_GIT": self.git,
             "FIXTURE_GIT_LOG": str(log), "FIXTURE_SOURCE": str(self.source),
+            "FIXTURE_JQ": self.jq, "FIXTURE_JQ_CRLF": "1" if crlf else "0",
         }
         result = subprocess.run(["bash", str(ROOT / ".github/scripts/harness-revision.sh")], env=environment, cwd=self.root, capture_output=True, text=True)
         calls = [json.loads(line) for line in log.read_text().splitlines()]
@@ -105,13 +116,20 @@ raise SystemExit(subprocess.run([os.environ["FIXTURE_GIT"], *args]).returncode)
 
     def assert_pinned(self, result):
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), self.pinned)
+        self.assertEqual(result.stdout, self.pinned + "\n")
         self.assertNotEqual(result.stdout.strip(), self.head)
 
     def test_origin_hash_needs_no_git_fallback(self):
         result, calls = self.resolve(origin=self.pinned)
         self.assert_pinned(result)
         self.assertEqual(calls, [])
+
+    def test_native_windows_jq_crlf_preserves_exact_version_and_revision(self):
+        for values in [{"origin": self.pinned}, {}, {"version": "v0.1.1"},
+                       {"version": f"v0.0.0-20261124010203-{self.pinned[:12]}"}]:
+            with self.subTest(values=values):
+                result, _ = self.resolve(crlf=True, **values)
+                self.assert_pinned(result)
 
     def test_proxy_without_origin_resolves_lightweight_tag(self):
         result, calls = self.resolve()
@@ -218,6 +236,68 @@ class MobilePolicyTests(unittest.TestCase):
 
 
 class WorkflowConfigurationTests(unittest.TestCase):
+    def test_only_distribution_packages_receive_telemetry_and_are_uploaded(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for name in ["macos", "windows", "host-linux"]:
+            job = re.split(r"\n(?=  [^ ])", workflow.split(f"\n  {name}:\n", 1)[1], maxsplit=1)[0]
+            with self.subTest(job=name):
+                for secret in ["SAILRY_SENTRY_DSN", "SAILRY_TELEMETRY_KEY"]:
+                    self.assertIn(f"      {secret}: ${{{{ inputs.distribution && secrets.{secret} || '' }}}}", job)
+                upload = job.split("      - uses: actions/upload-artifact@", 1)[1]
+                self.assertIn("        if: inputs.distribution\n", upload)
+        native = workflow.split("\n  native:\n", 1)[1].split("\n  macos:\n", 1)[0]
+        upload = native.split("      - uses: actions/upload-artifact@", 1)[1]
+        self.assertNotIn("        if: inputs.distribution\n", upload)
+
+    def test_mobile_policy_does_not_receive_credentials_without_upload_request(self):
+        workflow = (ROOT / ".github/workflows/mobile.yml").read_text()
+        policy = workflow.split("\n  policy:\n", 1)[1].split("\n  checks:\n", 1)[0]
+        for secret in [*MOBILE_SECRETS, "APPLE_API_PRIVATE_KEY"]:
+            with self.subTest(secret=secret):
+                self.assertIn(f"          {secret}: ${{{{ inputs.upload && secrets.{secret} || '' }}}}", policy)
+
+    def test_moved_integration_suites_have_database_fixtures_and_release_coverage(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = workflow.split("\n  integration:\n", 1)[1].split("\n  native:\n", 1)[0]
+        self.assertIn("    needs: native\n", job)
+        self.assertIn("    if: inputs.integration || inputs.distribution\n", job)
+        self.assertIn("    runs-on: ubuntu-24.04\n", job)
+        self.assertIn("      - uses: ./.github/actions/harness\n", job)
+        self.assertIn("          name: code-native-linux-amd64\n", job)
+        self.assertIn("sha256sum --check SHA256SUMS", job)
+        self.assertIn('test -f "$SAILRY_TURSO_LIB"', job)
+        for engine, port in [("postgres", 5432), ("mysql", 3306)]:
+            prefix = f"SAILRY_TEST_{engine.upper()}_"
+            self.assertIn(f"      {prefix}HOST: 127.0.0.1\n", job)
+            self.assertIn(f"          {prefix}PORT: ${{{{ job.services.{engine}.ports['{port}'] }}}}\n", job)
+            self.assertIn(f"      {prefix}TLS: disable\n", job)
+            for setting in ["DATABASE", "USERNAME", "PASSWORD"]:
+                self.assertRegex(job, rf"(?m)^      {prefix}{setting}: .+$")
+            self.assertIn(f"      {engine}:\n        image:", job)
+        step = job.split("      - name: SSH, database and code-index integration tests\n", 1)[1]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        packages = ["./modules/code/ssh/service", "./modules/code/databases/service", "./modules/code/code-index/node", "./internal/node"]
+        for package in packages:
+            self.assertTrue(any((ROOT / package).glob("*integration_test.go")), package)
+        with tempfile.TemporaryDirectory(prefix="code-integration-entry-") as temporary:
+            root = Path(temporary)
+            tool = root / "go"
+            tool.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+from pathlib import Path
+Path(os.environ["FIXTURE_OUTPUT"]).write_text(json.dumps(sys.argv[1:]))
+raise SystemExit(int(os.environ["FIXTURE_STATUS"]))
+''')
+            tool.chmod(0o755)
+            output = root / "arguments.json"
+            environment = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"], "FIXTURE_OUTPUT": str(output)}
+            for status in [0, 37]:
+                result = subprocess.run(["bash", "-c", script], cwd=ROOT,
+                                        env={**environment, "FIXTURE_STATUS": str(status)}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertEqual(json.loads(output.read_text()), ["test", "-p", "1", "-timeout", "20m", "-tags", "integration", *packages])
+        release = (ROOT / ".github/workflows/release.yml").read_text()
+        self.assertIn("      distribution: true\n", release)
+
     def test_go_checks_download_native_linux_runtime_before_running_tests(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text()
         checks = text.split("  checks:\n", 1)[1].split("\n  native:\n", 1)[0]
