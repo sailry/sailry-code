@@ -1,1 +1,6 @@
 git_page: Git
+git_badge_added: 新增
+git_badge_removed: 删除
+git_badge_partial: 仅显示部分结果
+git_detached: 分离 HEAD
+git_fork_from_branch: 从分支派生

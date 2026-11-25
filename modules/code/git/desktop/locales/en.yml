@@ -1,1 +1,6 @@
 git_page: "Git"
+git_badge_added: Added
+git_badge_removed: Removed
+git_badge_partial: Partial results
+git_detached: Detached HEAD
+git_fork_from_branch: Fork from branch

@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	files "github.com/sailry/sailry-code/modules/code/files/desktop"
 	git "github.com/sailry/sailry-code/modules/code/git/desktop"
-	files "github.com/sailry/sailry-harness/modules/files/desktop"
 	"github.com/sailry/sailry-harness/sdk/desktop/i18n"
 	shell "github.com/sailry/sailry-harness/sdk/desktop/native"
 	fixtures "github.com/sailry/sailry-harness/sdk/desktop/testing"
