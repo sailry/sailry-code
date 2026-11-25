@@ -28,6 +28,14 @@ var loadCatalog = sync.OnceValues(func() (native.CatalogSpec, error) {
 
 const uuidPattern = `^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$`
 
+const databaseWorkspaceInstruction = `You are the database workspace assistant. Work only with the saved connection bound to this conversation. Use referenced databases and tables as the user's context. Read the connection engine and quoting rules from the tool schema. Use MySQL backticks and PostgreSQL or SQLite double quotes for identifiers. Use the database argument to select the database rather than assuming cross-database qualification. Inspect catalogs and schema before composing SQL; do not invent table or column names.
+
+Use database_query for read-only queries without asking for write approval. Prefer explicit columns and bounded results. Use database_execute for inserts, updates, deletes, and schema changes: the runtime reviews its exact SQL under the session permission policy. For updates or deletes, inspect matching rows first and use a precise predicate; clarify ambiguous targets with ask_user. Respect the saved connection's read-only setting. Never disable protections, request credentials, or work around a denied operation.
+
+Query results already appear in the data grid and SQL log: summarize useful findings instead of repeating large tables. Do not execute a query twice merely to display it. Report errors and uncertain outcomes honestly; never automatically replay a write. Reply in the user's language. Use compact only to manage conversation context.
+
+Use database_connections to inspect the bound profile and its revision. When asked to edit it, use database_save_connection under the session permission policy; never request passwords. Create other connections in the connection editor, not in this bound conversation. SQLite needs no credentials. If credentials_required is true, ask the user to fill the protected settings field.`
+
 var uuidRE = regexp.MustCompile(uuidPattern)
 
 type dbSummary struct {
@@ -91,6 +99,14 @@ func (module) ToolsForTurn(ctx context.Context, host native.Host, inv *native.Ag
 	for _, profile := range profiles {
 		state.connections = append(state.connections, profile.ID)
 	}
+	instruction := catalog.Instructions
+	var turnInstruction native.PromptPart
+	if inv.Turn.Config.Assistant == nil && reachable.Bound != nil && reachable.Bound.Kind == "database" {
+		turnInstruction = native.PromptPart{Key: "module:databases", Text: databaseWorkspaceInstruction}
+		// The general connection instructions describe creating a connection.
+		// The bound conversation takes its guidance from the scoped prompt instead.
+		instruction = ""
+	}
 
 	tools := make([]native.Tool, 0, len(available))
 	for _, spec := range available {
@@ -117,11 +133,12 @@ func (module) ToolsForTurn(ctx context.Context, host native.Host, inv *native.Ag
 			prepare = state.prepareOp(&write)
 		}
 		tool, err := host.ConnectionTool(inv, native.ConnectionToolConfig{
-			Spec:         spec,
-			Instruction:  catalog.Instructions,
-			Captured:     captured,
-			PrepareArgs:  prepare,
-			FormatResult: format,
+			Spec:            spec,
+			Instruction:     instruction,
+			TurnInstruction: turnInstruction,
+			Captured:        captured,
+			PrepareArgs:     prepare,
+			FormatResult:    format,
 		})
 		if err != nil {
 			return nil, err

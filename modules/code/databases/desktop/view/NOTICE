@@ -1,0 +1,12 @@
+Sailry databases package logic is relocated from the corresponding
+plugins/builtin/databases sources at ef5e82ea.
+
+The Desktop view and interaction resources were adapted from
+sailry-plugins/databases/dev.sailry.platform/desktop at
+bd42d9cb2ff77a4257dd91693928276ccd6a5820 (Databases 0.1.26).
+
+License: GPL-3.0-only, as in the Sailry repository.
+Native execution, storage, credentials and transport remain owned by Sailry core.
+
+LICENSE reproduces the GNU GPL version 3 text. LICENSE.apache-2.0 retains
+the root license of the official extraction repository at the source revision.

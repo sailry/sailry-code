@@ -80,6 +80,11 @@ func TestDatabaseConnectionTools(t *testing.T) {
 	ctx := t.Context()
 	inv := nodetest.HoldTurn(t, node, session, held.Started)
 	bound := nodetest.ConnectionTools(t, node, inv)
+	for _, tool := range bound {
+		if tool.TurnInstruction.Text != "" {
+			t.Fatalf("unbound workspace tool %s received database assistant instructions", tool.Definition.Name)
+		}
+	}
 	declarations := nodetest.ConnectionDeclarations(bound)
 	captured := []protocol.ConnectionResource{{Kind: "database", Data: shared.ID}}
 
