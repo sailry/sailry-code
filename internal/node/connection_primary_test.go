@@ -29,7 +29,11 @@ func testSSHPrimary(t *testing.T, node *Node, ordinary protocol.Session, primary
 	config := ordinary.Config
 	config.Resource = &protocol.ConnectionResource{Kind: "ssh", Data: primary.ID}
 	owner := declarations[protocol.ToolOperationSaveSshConnection].Owner
-	sshPlugin := commandFixture(t, node, protocol.Command{Kind: "read_plugin", Data: protocol.CommandReadPluginPayload{Name: "ssh"}}).Data.(protocol.PluginInfo)
+	const entry = "dev.sailry.platform/desktop/main.js"
+	sshPlugin := installPluginFixture(t, node, "ssh", map[string]string{
+		"plugin.json": `{"$schema":"` + sdktest.ManifestSchema + `","name":"ssh","version":"0.1.0","extensions":{"dev.sailry.platform":{"api_version":"v1","scope":"host","requires_modules":["ssh"],"actions":["ssh.read","ssh.control","ssh.manage","conversation.read","conversation.control","projects.read"],"desktop":{"entry":"` + entry + `","resources":["` + entry + `"],"conversations":[{"id":"ssh","resource":"ssh","tools":[{"kind":"plugin","name":"ssh_run"},{"kind":"plugin","name":"ssh_transfer"},{"kind":"plugin","name":"ssh_connections"},{"kind":"plugin","name":"ssh_save_connection"}],"context":"Manage the selected SSH connection."}]}}}}`,
+		entry:         `export function create() { return {}; }`,
+	})
 	config.Assistant = &protocol.PluginConversationBinding{Package: sdktest.PackageReference(sshPlugin), ID: "ssh"}
 	session := commandFixture(t, node, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &config}}).Data.(protocol.Session)
 	controller := protocol.NodeID{93}
