@@ -11,6 +11,7 @@ import '../features/resources/files/contribution.dart';
 import '../features/resources/git/contribution.dart';
 
 const codeReleaseRepository = 'sailry/sailry-code';
+const codeMobileTagPrefix = 'mobile-v';
 
 final codeAssembly = MobileAssembly(
   pages: harnessPages,
@@ -27,5 +28,9 @@ final codeAssembly = MobileAssembly(
     key: ObjectKey(configuration.host),
     configuration: configuration,
   ),
-  createUpdates: () => AppUpdates(repository: codeReleaseRepository),
+  createUpdates: () => AppUpdates(
+    repository: codeReleaseRepository,
+    tagPrefix: codeMobileTagPrefix,
+    requireBuildNumber: true,
+  ),
 );
