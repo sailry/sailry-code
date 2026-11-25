@@ -55,24 +55,44 @@ func TestDesktopReleaseIdentityMatchesCodePackage(t *testing.T) {
 	}
 }
 
-func TestDesktopKeepsCompatibleDataDirectoryAndExplicitOverride(t *testing.T) {
+func TestDesktopDeclaresCodeProfileMigrationAndExplicitOverride(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	legacy := filepath.Join(home, ".sailry")
+	if err := os.Mkdir(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(legacy, "marker")
+	if err := os.WriteFile(marker, []byte("legacy profile"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	desktop := product.Desktop()
-	if desktop.DefaultProfile != "~/.sailry" {
-		t.Fatalf("Code changed the installed data-profile contract: %q", desktop.DefaultProfile)
+	if desktop.DefaultProfile != "~/.sailry-code" || desktop.LegacyProfile != "~/.sailry" {
+		t.Fatalf("Code default and legacy profiles = %q, %q", desktop.DefaultProfile, desktop.LegacyProfile)
 	}
 	profile, err := desktop.DataDir("")
-	if err != nil || profile != filepath.Join(home, ".sailry") {
-		t.Fatalf("compatible data directory = %q, %v", profile, err)
+	if err != nil || profile != filepath.Join(home, ".sailry-code") {
+		t.Fatalf("Code data directory = %q, %v", profile, err)
 	}
 	override := filepath.Join(home, "explicit-profile")
 	if got, err := desktop.DataDir(override); err != nil || got != override {
 		t.Fatalf("explicit data directory = %q, %v", got, err)
 	}
-	if entries, err := os.ReadDir(home); err != nil || len(entries) != 0 {
+	if contents, err := os.ReadFile(marker); err != nil || string(contents) != "legacy profile" {
+		t.Fatalf("identity resolution changed the legacy profile: %q, %v", contents, err)
+	}
+	if entries, err := os.ReadDir(home); err != nil || len(entries) != 1 || entries[0].Name() != ".sailry" {
 		t.Fatalf("identity resolution unexpectedly created or migrated profile files: %v, %v", entries, err)
+	}
+}
+
+func TestExplicitDataDirectoryDoesNotRequireHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	override := filepath.Join(t.TempDir(), "isolated-profile")
+	if got, err := product.Desktop().DataDir(override); err != nil || got != override {
+		t.Fatalf("explicit data directory without a home = %q, %v", got, err)
 	}
 }
 

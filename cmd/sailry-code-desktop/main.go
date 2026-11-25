@@ -11,11 +11,16 @@ import (
 )
 
 func main() {
-	if err := desktop.Run(os.Args[1:], desktop.Options{
-		Identity: product.Desktop(),
-		Assembly: codedesktop.Assembly(),
-		Host:     codehost.Assembly(),
-	}); err != nil {
+	if err := run(os.Args[1:], desktop.Run); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func run(args []string, start func([]string, desktop.Options) error) error {
+	return start(args, desktop.Options{
+		Identity:   product.Desktop(),
+		Assembly:   codedesktop.Assembly(),
+		Host:       codehost.Assembly(),
+		NativeName: "Sailry Code",
+	})
 }

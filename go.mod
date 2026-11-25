@@ -5,14 +5,13 @@ go 1.27.3
 require (
 	charm.land/fantasy v0.46.0
 	github.com/egoist/mygo v0.10.0
-	github.com/getsentry/sentry-go v0.50.0
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/jonboulle/clockwork v0.5.0
 	github.com/odvcencio/gotreesitter v0.57.0
 	github.com/pkg/sftp v1.13.12
-	github.com/sailry/sailry-harness v0.2.14-0.20261125103512-78269bd4860e
+	github.com/sailry/sailry-harness v0.2.13
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
 	lukechampine.com/blake3 v1.4.1
@@ -91,6 +90,7 @@ require (
 	github.com/flynn/noise v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.16 // indirect
+	github.com/getsentry/sentry-go v0.50.0 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.9.2 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect

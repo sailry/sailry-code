@@ -5,24 +5,45 @@ case "${1:-}" in
   -h | --help)
     cat <<'HELP'
 Usage: ./dev.sh [build|test|vet GO_ARGUMENTS...]
+       ./dev.sh desktop [dev|NAME]
+       ./dev.sh native[-build]
 
-Without arguments, prepare the Harness revision pinned by go.mod, including its
-recursive submodules, and an ignored .runtime/go.work. Requires Bash, Go, Git and jq.
+No command: prepare the exact Harness pin, recursive submodules and .runtime/go.work.
+Requires Bash, Go, Git and jq; native builds also need rustup and a system linker.
+Go 1.27.3, CGO_ENABLED=0, no inherited GOROOT; manifests/locks stay read-only.
+  just desktop        Code default; no --data-dir, preserving first-start migration
+  just desktop dev    ~/.sailry-code-dev, separate from Harness development data
+  just desktop NAME   This Code checkout's .runtime/profiles/NAME
+Names use letters/digits/._-, cannot start with a dot; close other profile users.
 
-Examples:
-  ./dev.sh build ./cmd/sailry-code-desktop
-  ./dev.sh build ./cmd/sailry-code-host
-  ./dev.sh test ./...
+Native setup: just bootstrap, then install the pinned Rust toolchain:
+  (cd .runtime/harness/native/turso && rustup toolchain install)
+just native builds/reuses FTS Turso; Desktop prepares it and sets SAILRY_TURSO_LIB.
+Staging: .runtime/harness/.runtime/native/<goos>-<goarch>/; an explicit library
+overrides it. Tests need SAILRY_TURSO_LIB; just native-build forces a rebuild.
+Verify the matching library with file and otool -L (macOS) or ldd (Linux), then
+run just desktop native-smoke twice: window/history must open without loader errors.
+Optional native features need the pinned Harness native setup and separate checks.
 
-Only this entry's clean, detached .runtime/harness checkout is reused. Existing
-development checkouts, changed pins and custom workspaces are never overwritten.
-Move an obsolete managed checkout and workspace aside explicitly before retrying.
-Go commands use -mod=readonly; no Go/Dart manifests or lockfiles are rewritten.
-Tests need the pinned Turso runtime supplied separately through SAILRY_TURSO_LIB.
+Script-only checks: bash -n dev.sh; just --fmt --check; just test-scripts.
+Only clean, managed, detached checkouts are reused; mismatched pins, development
+checkouts and custom workspaces are never overwritten. First setup needs network.
 HELP
     exit 0 ;;
-  '' | build | test | vet) ;;
-  *) echo 'usage: ./dev.sh [build|test|vet GO_ARGUMENTS...]' >&2; exit 2 ;;
+  '' | build | test | vet | desktop | native | native-build) ;;
+  *) echo 'usage: ./dev.sh [build|test|vet GO_ARGUMENTS...] | desktop [dev|NAME] | native[-build]' >&2; exit 2 ;;
+esac
+mode=${1:-}
+case "$mode" in
+  desktop)
+    test $# -le 2 || { echo 'usage: ./dev.sh desktop [dev|NAME]' >&2; exit 2; }
+    name=${2:-}
+    if test -n "$name" && [[ ! $name =~ ^[A-Za-z0-9_-][A-Za-z0-9_.-]*$ ]]; then
+      echo 'Profile names must be a single directory name using letters, digits, hyphens, underscores or dots' >&2
+      exit 2
+    fi ;;
+  native | native-build)
+    test $# -eq 1 || { echo 'usage: ./dev.sh native[-build]' >&2; exit 2; } ;;
 esac
 for argument in "$@"; do
   case "$argument" in
@@ -43,6 +64,7 @@ lock=$runtime/.harness-bootstrap.lock
 mkdir "$lock" || { echo 'Another bootstrap owns .runtime/.harness-bootstrap.lock; inspect it before retrying' >&2; exit 1; }
 trap 'rmdir "$lock"' EXIT
 
+verified_revision= verified_timestamp=
 if test -e "$harness"; then
   test -d "$harness/.git" && test ! -L "$harness/.git" &&
     test "$(git -C "$harness" config --local --get sailry.codeBootstrap)" = 1 ||
@@ -57,11 +79,13 @@ if test -e "$harness"; then
   submodules=$(git -C "$harness" submodule status --recursive)
   test -z "$status" && ! grep -Eq '^[-+U]' <<<"$submodules" ||
     { echo 'The managed Harness checkout or its submodules changed; refusing to modify it' >&2; exit 1; }
+  verified_revision=$(git -C "$harness" rev-parse --verify HEAD)
+  verified_timestamp=$(TZ=UTC0 git -C "$harness" show -s --date=format-local:%Y%m%d%H%M%S --format=%cd "$verified_revision")
 fi
 
 unset GOROOT
 export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=0 GOWORK=off GOFLAGS=
-revision=$(bash .github/scripts/harness-revision.sh)
+revision=$(bash .github/scripts/harness-revision.sh "$verified_revision" "$verified_timestamp")
 if test -e "$workspace"; then
   legacy_root=$root
   case "${OSTYPE:-}" in msys*|cygwin*) legacy_root=$(cygpath -am "$root") ;; esac
@@ -90,6 +114,43 @@ export GOWORK=$workspace SAILRY_HARNESS_DIR=$harness GOFLAGS=-mod=readonly
 printf 'Harness %s; workspace .runtime/go.work is ready.\n' "$revision" >&2
 rmdir "$lock"
 trap - EXIT
+case "$mode" in
+  desktop | native | native-build)
+    case "$(uname -s)" in
+      Darwin) platform=darwin; library=libturso_sync_sdk_kit.dylib ;;
+      Linux) platform=linux; library=libturso_sync_sdk_kit.so ;;
+      MINGW* | MSYS*) platform=windows; library=turso_sync_sdk_kit.dll ;;
+      *) echo 'Unsupported native build platform' >&2; exit 1 ;;
+    esac
+    case "$(uname -m)" in
+      arm64 | aarch64) architecture=arm64 ;;
+      x86_64 | amd64) architecture=amd64 ;;
+      *) echo 'Unsupported native build architecture' >&2; exit 1 ;;
+    esac
+    native=$harness/.runtime/native/$platform-$architecture
+    if test "$mode" = native-build; then
+      exec sh "$harness/native/turso/build.sh"
+    fi
+    if test -n "${SAILRY_TURSO_LIB:-}"; then
+      test -f "$SAILRY_TURSO_LIB" ||
+        { echo "SAILRY_TURSO_LIB must name an existing $library" >&2; exit 1; }
+    else
+      export SAILRY_TURSO_LIB=$native/$library
+      test -f "$SAILRY_TURSO_LIB" || sh "$harness/native/turso/build.sh"
+    fi
+    if test "$mode" = native; then
+      printf 'Turso runtime: %s\n' "$SAILRY_TURSO_LIB" >&2
+      exit 0
+    fi
+    export SAILRY_HELPERS_DIR=${SAILRY_HELPERS_DIR:-$native/helpers}
+    arguments=(run ./cmd/sailry-code-desktop)
+    case "$name" in
+      '') ;;
+      dev) arguments+=(--data-dir "$HOME/.sailry-code-dev") ;;
+      *) arguments+=(--data-dir "$runtime/profiles/$name") ;;
+    esac
+    exec go "${arguments[@]}" ;;
+esac
 if test $# -gt 0; then
   exec go "$@"
 fi

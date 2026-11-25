@@ -20,7 +20,7 @@ func Desktop() product.Desktop {
 	return product.Desktop{
 		ID: ID, Name: "Sailry Code", Version: Version,
 		Website: "https://sailry.dev", Feedback: "https://github.com/" + repository + "/issues",
-		DefaultProfile: "~/.sailry", DefaultEntry: "page:conversation",
+		DefaultProfile: "~/.sailry-code", LegacyProfile: "~/.sailry", DefaultEntry: "page:conversation",
 		Release: product.Release{
 			Source:    "https://api.github.com/repos/" + repository + "/releases",
 			Downloads: "https://github.com/" + repository + "/releases/download", PublicKeys: publicKeys,
