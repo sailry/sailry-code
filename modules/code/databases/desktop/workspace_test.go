@@ -77,6 +77,7 @@ type databaseWindow struct {
 
 type databaseOperation struct {
 	kind string
+	name string
 	sql  string
 	err  error
 }
@@ -91,7 +92,7 @@ func openRecordedWorkspace(t *testing.T, assembly native.Assembly) *databaseWind
 		if input.Query != nil {
 			query = input.Query.Sql
 		}
-		operations <- databaseOperation{output.Kind, query, err}
+		operations <- databaseOperation{kind: output.Kind, name: input.Profile.Name, sql: query, err: err}
 		return output, err
 	}
 	return &databaseWindow{Window: support.Open(t, host, assembly), operations: operations}
@@ -100,10 +101,11 @@ func openRecordedWorkspace(t *testing.T, assembly native.Assembly) *databaseWind
 func (w *databaseWindow) exercise(compiled bool) {
 	t := w.T
 	db, path := sqliteFixture(t)
+	const savedName = "SQLite workspace fixture"
 	w.clickRail("Databases")
 	w.Await("database workspace did not open", func() bool { return w.Tester.HasText("Open a database connection") })
 	w.Click(w.control(ui.RoleButton, "New connection"))
-	w.replace("Name", "SQLite workspace fixture")
+	w.replace("Name", savedName)
 	w.clickByName("MySQL")
 	if field := w.control(ui.RoleTextField, "Password"); !field.Password || field.Value != "" {
 		t.Fatalf("password is not a blank protected field: %+v", field)
@@ -112,23 +114,35 @@ func (w *databaseWindow) exercise(compiled bool) {
 	w.replace("Database file path", path)
 	w.clickByName("Global sharing")
 	if compiled {
-		w.testConnection()
+		w.testConnection(savedName)
 		if profiles := w.profiles(); len(profiles) != 0 {
 			t.Fatal("testing a connection saved a profile")
 		}
 	}
-	w.Click(w.control(ui.RoleButton, "Save"))
-	w.Await("saving did not return to the connection list", func() bool { return w.Tester.HasText("SQLite workspace fixture") })
+	w.clickConnectionAction("Save")
+	w.Await("saving did not close the editor and show the saved profile", func() bool {
+		return !w.has(ui.RoleTextField, "Database file path") && w.has(ui.RoleButton, savedName) && w.has(ui.RoleStatus, "Saved")
+	})
 	profiles := w.profiles()
 	if len(profiles) != 1 || profiles[0].Connection.Kind != "sqlite" || !profiles[0].ReadOnly || profiles[0].Sharing == nil || profiles[0].Sharing.Kind != "global" {
 		t.Fatalf("saved profiles = %+v", profiles)
 	}
 	w.Click(w.control(ui.RoleButton, "Database connections"))
-	w.choose("SQLite workspace fixture")
+	w.choose(savedName)
 	w.choose("Edit")
-	w.testConnection()
-	w.Click(w.control(ui.RoleButton, "Cancel"))
-	w.clickByName("SQLite workspace fixture")
+	w.Await("the connection picker did not hand off to the saved SQLite editor", func() bool {
+		field, ok := w.Tester.AccessByRole(ui.RoleTextField, "Database file path")
+		return w.Tester.HasText("Edit connection") && !w.has(ui.RoleTextField, "Search") && ok && visible(field) && field.Value == path
+	})
+	const unsavedName = "SQLite draft checked without saving"
+	w.replace("Name", unsavedName)
+	w.testConnection(unsavedName)
+	w.clickConnectionAction("Cancel")
+	w.Await("cancel did not close the connection editor", func() bool { return !w.has(ui.RoleTextField, "Database file path") })
+	if saved := w.profiles(); len(saved) != 1 || saved[0].Name != savedName || saved[0].Revision != profiles[0].Revision {
+		t.Fatalf("testing and canceling changed the saved profile: %+v", saved)
+	}
+	w.clickByName(savedName)
 	w.expand("main", "fixture_rows")
 	w.Click(w.control(ui.RoleButton, "New query"))
 	const query = "SELECT id, label FROM fixture_rows"
@@ -165,9 +179,9 @@ func (w *databaseWindow) exercise(compiled bool) {
 		// this Harness baseline. Its script also has an entry refresh path
 		// when the host retains a mount, covered by the separate script test.
 		w.Await("the legacy database page did not return to the saved-connection landing", func() bool {
-			return w.Tester.HasText("Open a database connection") && w.Tester.HasText("SQLite workspace fixture")
+			return w.Tester.HasText("Open a database connection") && w.Tester.HasText(savedName)
 		})
-		w.clickByName("SQLite workspace fixture")
+		w.clickByName(savedName)
 		w.expand("main", "arrived_while_hidden")
 	}
 	if w.Tester.HasText("keep unsent SQL draft") {
@@ -175,7 +189,11 @@ func (w *databaseWindow) exercise(compiled bool) {
 	}
 	var queries []string
 	for len(w.operations) > 0 {
-		if operation := <-w.operations; operation.sql != "" {
+		operation := <-w.operations
+		if operation.kind == "connected" {
+			t.Fatalf("unexpected additional connection test: %+v", operation)
+		}
+		if operation.sql != "" {
 			queries = append(queries, operation.sql)
 		}
 	}
@@ -184,19 +202,30 @@ func (w *databaseWindow) exercise(compiled bool) {
 	}
 }
 
-func (w *databaseWindow) testConnection() {
+func (w *databaseWindow) clickConnectionAction(label string) {
 	w.T.Helper()
-	w.Click(w.control(ui.RoleButton, "Test connection"))
-	w.Await("SQLite connection test did not settle", func() bool {
+	w.Await("connection editor action is not reachable: "+label, func() bool {
+		// The picker's saved-connection actions also include “Test connection”.
+		button, ok := w.Tester.AccessByRole(ui.RoleButton, label)
+		return !w.has(ui.RoleTextField, "Search") && w.has(ui.RoleTextField, "Database file path") &&
+			ok && visible(button) && !button.Disabled && w.Tester.Click(label) == nil
+	})
+}
+
+func (w *databaseWindow) testConnection(name string) {
+	w.T.Helper()
+	w.clickConnectionAction("Test connection")
+	completed := false
+	w.Await("SQLite connection test did not execute and acknowledge the editor draft", func() bool {
 		select {
 		case operation := <-w.operations:
-			if operation.err != nil || operation.kind != "connected" {
-				w.T.Fatalf("test_database did not connect: %+v", operation)
+			if completed || operation.err != nil || operation.kind != "connected" || operation.name != name {
+				w.T.Fatalf("unexpected editor database test: %+v", operation)
 			}
-			return true
+			completed = true
 		default:
-			return false
 		}
+		return completed && w.has(ui.RoleStatus, "Connected")
 	})
 }
 

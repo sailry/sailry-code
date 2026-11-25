@@ -42,6 +42,9 @@ func installDatabasePackage(w *databaseWindow, source string) {
 		return false
 	})
 	w.Do(command(t, "install_plugin", map[string]any{"name": "databases", "worktree": id, "path": "databases", "expected_revision": 0}))
+	w.Await("the installed database package did not reach the Desktop projection", func() bool {
+		return slices.ContainsFunc(w.Controller.Snapshot().Plugins, func(pkg protocol.PluginSummary) bool { return pkg.Name == "databases" })
+	})
 }
 
 func TestCodeDatabaseWithUnrelatedSameNamePackage(t *testing.T) {
@@ -141,6 +144,9 @@ func TestCodeDatabasePreservesLegacyAssistantAdmission(t *testing.T) {
 		Name: "databases", Digest: installed[0].Digest, SettingsRevision: installed[0].SettingsRevision,
 	}}
 	session := support.Result[protocol.Session](t, w.Do(protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &config}}))
+	w.Await("the saved assistant session did not reach the Desktop projection", func() bool {
+		return w.App.Data.Find(session.ID.String()) != nil
+	})
 	w.clickByName(connection.Name)
 	w.Await("native database assistant did not mount the saved resource session", func() bool {
 		return w.Tester.HasText("Database assistant") && w.has(ui.RoleButton, support.Label("chat_connection_history"))
