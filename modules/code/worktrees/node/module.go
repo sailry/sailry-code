@@ -106,13 +106,21 @@ func prepareFor(name string) func(context.Context, json.RawMessage) (json.RawMes
 			if !ok {
 				return nil, invalid()
 			}
-			head, ok := args["expected_head"].(string)
-			if !ok {
-				return nil, invalid()
+			head := ""
+			if v, exists := args["expected_head"]; exists && v != nil {
+				s, ok := v.(string)
+				if !ok {
+					return nil, invalid()
+				}
+				head = s
 			}
-			index, ok := args["expected_index"].(string)
-			if !ok {
-				return nil, invalid()
+			index := ""
+			if v, exists := args["expected_index"]; exists && v != nil {
+				s, ok := v.(string)
+				if !ok {
+					return nil, invalid()
+				}
+				index = s
 			}
 			includeChanges := false
 			if v, exists := args["include_changes"]; exists {
@@ -122,6 +130,7 @@ func prepareFor(name string) func(context.Context, json.RawMessage) (json.RawMes
 				}
 				includeChanges = b
 			}
+			// The wire command requires these fields even for branch-only calls.
 			return json.Marshal(map[string]any{
 				"branch": branch, "expected_head": head, "expected_index": index, "include_changes": includeChanges,
 			})

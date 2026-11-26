@@ -25,7 +25,7 @@ Sailry Code depends one-way on `github.com/sailry/sailry-harness` through its pu
 
 | Component | Responsibility |
 | --- | --- |
-| `cmd/sailry-code-desktop` | Desktop binary (`mygo.json` v`0.1.0`, `ai.sailry.desktop`, macOS/Windows packaging scripts) |
+| `cmd/sailry-code-desktop` | Desktop binary (`mygo.json` v`0.3.0`, `ai.sailry.desktop`, macOS/Windows packaging scripts) |
 | `cmd/sailry-code-host` | Headless `sailry-host` binary and Host archive packaging wrapper |
 | `cmd/update-feed` | Ed25519 Desktop update catalog signer using `sdk/release.PublishDesktop` |
 | `cmd/package-env.sh` | Packaging environment (`SAILRY_PRODUCT=code`, release repository, `ProductVersion` ldflags) |
@@ -44,7 +44,7 @@ Each Code module registers directly with Harness host contracts in Go (no JS VM 
 | --- | --- | --- | --- |
 | `databases` | `databases` | `page:databases` (default-pinned, `moejs` view, `database` link handler) | `databasesnode.Module()` (`DatabaseServiceProvider`), MySQL (`go-sql-driver/mysql`), PostgreSQL (`pgx/v5`), SQLite (`modernc.org/sqlite`), optional SSH tunnel, 5 tools (`database_catalog`, `database_query`, `database_execute`, `database_connections`, `database_save_connection`) |
 | `files` | `files` / `files-workspace` | `native.FilesPage` (default-pinned), `native.Files` conversation panel (`Cmd+P`), file tree/search/tabs/trash/transfers, `file`/`directory` links | Uses Harness's `modules/files/node` via `HarnessAssembly()` for `find_files`, `search_files`, `read_file`, and other file tools |
-| `git` | `git` | `page:git` (`Ctrl+Shift+G`, default-pinned, checkpoint history), project context menu, replaces `git` slot controls (`branch`, `manage`, `changes`) | `gitnode.Module()` (`WorkspaceServiceProvider{Git: true}`), native Git + `go-git/v5` engine, repo watch, `clone` preparer, hunk checkpoints, workspace commands, 7 read-only tools (`git_status`, `git_diff`, `git_log`, `git_show`, `git_blame`, `list_git_changes`, `read_git_change`) |
+| `git` | `git` | `page:git` (`Ctrl+Shift+G`, default-pinned, checkpoint history), project context menu, replaces `git` slot controls (`branch`, `manage`, `changes`) | `gitnode.Module()` (`WorkspaceServiceProvider{Git: true}`), native Git + `go-git/v5` engine, repo watch, `clone` preparer, hunk checkpoints, workspace commands, 2 read-only tools (`git_status`, `git_diff`) using the same Git service |
 | `ssh` | `ssh` | `page:ssh` (default-pinned, `moejs` view), SFTP transfer worker, session tabs, `ssh` link handler | `sshnode.Module()` (`SSHServiceProvider`), `x/crypto/ssh` + `pkg/sftp` pool, remote command & file transfers, remote `sailry-host` install/update, 4 tools (`ssh_run`, `ssh_transfer`, `ssh_connections`, `ssh_save_connection`) |
 | `terminal` | `commands` slots | Registered main-workspace terminal pane for project rows and header tabs, `native.Terminal` panel (`Ctrl+\``), project "new terminal" action, `settings.Terminal` page, replaces `commands` terminal slots (`terminal-cli`, `terminal-menu-new`, `terminal-menu-cli`) | `terminalnode.Module()` (`TerminalServiceProvider` via `node.NewTerminalService`) + embedded `python` skill (`$SAILRY_PYTHON`, Python 3.12.13) |
 | `worktrees` | `worktrees` | Project/conversation worktree workflows (`worktree_create`, `worktree_manage`, `worktree_fork_from`, branch forks), replaces `worktrees` controls (`location`, `manage`, `create`, `fork`) | `worktreesnode.Module()` (`WorkspaceServiceProvider{Worktrees: true}`), managed `.sailry/worktrees/<id>` lifecycle & cleanup, 5 workspace commands, 4 tools (`list_worktrees`, `create_worktree`, `register_worktree`, `remove_worktree`) |
@@ -58,15 +58,15 @@ Each Code module registers directly with Harness host contracts in Go (no JS VM 
 
 ## Product identity, profiles, and legacy migration
 
-- **Identity (`internal/product/identity.go`)**: Sets `ID = "code"`, `Name = "Sailry Code"`, `Version = "0.1.0"`, and preserves installed package compatibility (`ai.sailry.desktop`, `sailry-desktop`, and `product.CodeHost()` keeping `sailry-host` / `~/.sailry-host` service layout while switching release feeds to `sailry/sailry-code`).
+- **Identity (`internal/product/identity.go`)**: Sets `ID = "code"`, `Name = "Sailry Code"`, `Version = "0.3.0"`, and preserves installed package compatibility (`ai.sailry.desktop`, `sailry-desktop`, and `product.CodeHost()` keeping `sailry-host` / `~/.sailry-host` service layout while switching release feeds to `sailry/sailry-code`).
 - **Profiles**: Default Desktop and foreground Host profile is `~/.sailry-code`; `just desktop dev` uses `~/.sailry-code-dev`; `just desktop <name>` uses `.runtime/profiles/<name>`.
 - **Crash-safe legacy adoption**: With `LegacyProfile = "~/.sailry"`, starting Desktop without `--data-dir` when `~/.sailry-code` is absent and `~/.sailry` is stopped runs Harness's journaled migration (`~/..sailry-code.legacy-profile/`), relocating stored profile paths, keeping database backups, and repairing linked Git worktree metadata.
 
 ## Mobile architecture (`apps/mobile`)
 
-- Package `sailry_code_mobile` (`0.2.13+31`) shares Harness's Go C ABI bridge (`sailry_bridge`) prepared by `apps/mobile/tool/prepare.sh` and `tool/build_native.sh`.
+- Package `sailry_code_mobile` (`0.3.0+32`) shares Harness's Go C ABI bridge (`sailry_bridge`) prepared by `apps/mobile/tool/prepare.sh` and `tool/build_native.sh`.
 - `lib/assembly/code.dart` mounts Harness's core pages (`chat`, `hosts`, `projects`, `settings`) alongside ordered project resources (`gitResource`, `filesResource`, `terminalResource`, `portsResource`), `DraftWorkspace` (worktree/branch selection), and `ModePicker` (`code`, `plan`, `flagship`).
-- Uses its own release feed (`sailry/sailry-code`, `mobile-v<SemVer>+<build>`) independent of Desktop `0.1.0` releases.
+- Uses its own release feed (`sailry/sailry-code`, `mobile-v<SemVer>+<build>`) independent of Desktop and Host releases.
 
 ## Packaging, signing, and updates
 

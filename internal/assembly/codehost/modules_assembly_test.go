@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"github.com/sailry/sailry-code/internal/testsupport/node"
-	filesnode "github.com/sailry/sailry-harness/modules/files/node"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +15,8 @@ import (
 
 	"charm.land/fantasy"
 	codehost "github.com/sailry/sailry-code/internal/assembly/codehost"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
+	filesnode "github.com/sailry/sailry-harness/modules/files/node"
 	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"github.com/sailry/sailry-harness/sdk/native/process"
 	"github.com/sailry/sailry-harness/sdk/sdktest"
@@ -38,8 +38,20 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 				t.Errorf("official host assembly missing module %q (got %v)", want, ids)
 			}
 		}
-		if totalTools < 120 {
+		if totalTools < 110 {
 			t.Fatalf("unexpected catalog tool count = %d", totalTools)
+		}
+		for _, name := range []string{"git_status", "git_diff"} {
+			for _, lookup := range []string{name, sdktest.Alias("git", name)} {
+				if meta, ok := assembly.LookupTool(lookup); !ok || meta.Name != name || meta.Display == nil || meta.Display.Locales["zh-CN"] == "" {
+					t.Fatalf("Git inspection tool %q missing from the catalog: %+v", lookup, meta)
+				}
+			}
+		}
+		for _, name := range []string{"git_log", "git_show", "git_blame", "list_git_changes", "read_git_change"} {
+			if _, ok := assembly.LookupTool(name); ok {
+				t.Errorf("retired Git agent tool %q is still in the catalog", name)
+			}
 		}
 		// Legacy alias lookup resolves bare names and former plugin_<hash>_* aliases.
 		if meta, ok := assembly.LookupTool("read_file"); !ok || meta.Display == nil || meta.Display.Locales["zh-CN"] == "" {
@@ -67,19 +79,19 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 
 	t.Run("native tools run without UI plugins and honor legacy aliases", func(t *testing.T) {
 		legacyRead := sdktest.Alias("files", "read_file")
-		legacyGit := sdktest.Alias("git", "git_status")
 		legacyMemSave := sdktest.Alias("memory", "save_memory")
 		legacyMemSearch := sdktest.Alias("memory", "search_memory")
 		script := &mediaScript{
 			results: map[string]string{},
 			steps: [][][3]string{
 				{
-					{"discover", "tool_search", `{"query":"select:` + legacyGit + `,list_ocr_models,database_connections,ssh_connections"}`},
+					{"discover", "tool_search", `{"query":"select:list_ocr_models,database_connections,ssh_connections,git_status,git_diff"}`},
 				},
 				{
 					{"read-bare", "read_file", `{"path":"hello.txt"}`},
 					{"read-legacy", legacyRead, `{"path":"second.txt"}`},
-					{"git", "git_status", `{}`},
+					{"git-status", "git_status", `{}`},
+					{"git-diff", "git_diff", `{"path":"second.txt"}`},
 					{"ocr", "list_ocr_models", `{}`},
 					{"db", "database_connections", `{}`},
 					{"ssh", "ssh_connections", `{}`},
@@ -197,14 +209,10 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		provider.Models = []protocol.ConversationModel{m}
 		nodetest.Command(t, n, protocol.Command{Kind: "save_provider", Data: protocol.CommandSaveProviderPayload{Provider: provider, Secret: &secret}})
 
-		root, err := filepath.EvalSymlinks(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := writeFixtureFile(filepath.Join(root, "hello.txt"), "hello native modules\n"); err != nil {
-			t.Fatal(err)
-		}
-		if err := writeFixtureFile(filepath.Join(root, "second.txt"), "legacy alias content\n"); err != nil {
+		root, head := nodetest.GitProject(t, map[string]string{
+			"hello.txt": "hello native modules\n", "second.txt": "original content\n",
+		})
+		if err := os.WriteFile(filepath.Join(root, "second.txt"), []byte("legacy alias content\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		project := nodetest.Command(t, n, protocol.Command{Kind: "create_project", Data: protocol.ProjectsDraft{
@@ -256,17 +264,32 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		results := script.results
 		offered := script.offered
 		script.mu.Unlock()
-		if len(offered) == 0 || !slices.Contains(offered[0], "read_file") || !slices.Contains(offered[0], "apply_patch") || !slices.Contains(offered[0], "git_status") || !slices.Contains(offered[0], "git_diff") {
+		if len(offered) == 0 || !slices.Contains(offered[0], "read_file") || !slices.Contains(offered[0], "apply_patch") {
 			t.Fatalf("core native coding tools not offered on step 1: %v", offered)
+		}
+		for _, name := range []string{"git_status", "git_diff"} {
+			if !slices.Contains(offered[0], name) {
+				t.Errorf("Git inspection tool %q was not offered: %v", name, offered[0])
+			}
+		}
+		var status struct {
+			Kind string `json:"kind"`
+			Data struct {
+				Head          string `json:"head"`
+				IndexRevision string `json:"index_revision"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(results["git-status"]), &status); err != nil || status.Kind != "git_status" || status.Data.Head != head || status.Data.IndexRevision == "" {
+			t.Fatalf("git_status did not return the repository versions: %s (%v)", results["git-status"], err)
+		}
+		if result := results["git-diff"]; !strings.Contains(result, `"kind":"git_diff"`) || !strings.Contains(result, `"scope":"all"`) || !strings.Contains(result, "+legacy alias content") {
+			t.Fatalf("git_diff did not return the default scope and patch: %q", result)
 		}
 		if !strings.Contains(results["read-bare"], "hello native modules") {
 			t.Fatalf("read-bare = %q", results["read-bare"])
 		}
 		if !strings.Contains(results["read-legacy"], "legacy alias content") {
 			t.Fatalf("read-legacy (alias) = %q", results["read-legacy"])
-		}
-		if !strings.Contains(results["git"], `"kind":"git_status"`) {
-			t.Fatalf("git_status = %q", results["git"])
 		}
 		if !strings.Contains(results["ocr"], `"models"`) {
 			t.Fatalf("list_ocr_models = %q", results["ocr"])
@@ -321,7 +344,7 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		script := &mediaScript{
 			results: map[string]string{},
 			steps: [][][3]string{
-				{{"discover", "tool_search", `{"query":"select:database_connections,ssh_connections,git_status"}`}},
+				{{"discover", "tool_search", `{"query":"select:database_connections,ssh_connections,git_status,git_diff"}`}},
 			},
 		}
 		env := process.NewEnvironment([]string{"PATH=/usr/bin:/bin"})
@@ -449,6 +472,11 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		if len(offered) == 0 || !slices.Contains(offered[0], "read_file") {
 			t.Fatalf("assembled files module tool read_file missing: %v", offered)
 		}
+		for _, name := range []string{"git_status", "git_diff"} {
+			if slices.Contains(offered[0], name) {
+				t.Errorf("tool %q offered without the Git module", name)
+			}
+		}
 		var found struct {
 			Tools []any `json:"tools"`
 		}
@@ -465,8 +493,4 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		defer restored.Stop(context.Background())
 		verifyRetained(restored, true)
 	})
-}
-
-func writeFixtureFile(path, content string) error {
-	return os.WriteFile(path, []byte(content), 0o600)
 }

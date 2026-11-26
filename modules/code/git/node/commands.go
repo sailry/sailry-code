@@ -29,7 +29,7 @@ func bindWorkspace(repo *git.Service) native.WorkspaceBindings {
 		},
 		StageTurnHunk: func(ctx context.Context, root string, input protocol.ConversationCheckpointHunkSelection, transform func(string) (string, error)) (protocol.Output, error) {
 			if input.ExpectedIndex == nil {
-				return protocol.Output{}, invalid("staging a hunk requires the index revision")
+				return protocol.Output{}, &protocol.Fault{Code: protocol.ErrorCodeInvalidRequest, Message: "staging a hunk requires the index revision"}
 			}
 			index, err := repo.EditIndex(ctx, root, input.Path, *input.ExpectedIndex, input.ExpectedHead, input.ExpectedRevision, transform)
 			value := protocol.ConversationCheckpointHunkApplied{Session: input.Session, Turn: input.Turn, Path: input.Path, Hunk: input.Hunk, Revision: input.ExpectedRevision, Index: &index}

@@ -21,28 +21,38 @@ type capturedChange struct {
 // CreateManagedWorktree copies captured changes into a new owned checkout. The
 // source worktree and index are never modified or stashed.
 func (s *Service) CreateManagedWorktree(ctx context.Context, source, main string, id protocol.WorktreeID, input protocol.CommandCreateManagedWorktreePayload) (string, error) {
-	if input.Base != nil && input.IncludeChanges {
-		return "", invalid("a base commit cannot include source changes")
+	if input.IncludeChanges {
+		if input.Base != nil {
+			return "", invalid("a base commit cannot include source changes")
+		}
+		if input.ExpectedHead == "" || input.ExpectedIndex == "" {
+			return "", invalid("copying source changes requires the observed HEAD and index revision")
+		}
 	}
-	base := input.ExpectedHead
-	if input.Base != nil {
-		base = *input.Base
-	}
+	var base string
 	r, err := open(source)
 	if err != nil {
 		return "", err
 	}
-	if input.Base == nil {
+	if input.Base != nil {
+		base = *input.Base
+	} else {
 		h, err := head(r)
 		if err != nil {
 			return "", err
 		}
-		revision, err := indexRevision(source, r)
-		if err != nil {
-			return "", err
-		}
-		if h.Head == nil || *h.Head != input.ExpectedHead || revision != input.ExpectedIndex {
+		if h.Head == nil || input.ExpectedHead != "" && *h.Head != input.ExpectedHead {
 			return "", conflict()
+		}
+		base = *h.Head
+		if input.ExpectedIndex != "" {
+			revision, err := indexRevision(source, r)
+			if err != nil {
+				return "", err
+			}
+			if revision != input.ExpectedIndex {
+				return "", conflict()
+			}
 		}
 	}
 	idx, err := r.Storer.Index()
@@ -60,6 +70,10 @@ func (s *Service) CreateManagedWorktree(ctx context.Context, source, main string
 		status, err := s.Status(ctx, source)
 		if err != nil {
 			return "", err
+		}
+		if status.Head == nil || *status.Head != input.ExpectedHead ||
+			status.IndexRevision == nil || *status.IndexRevision != input.ExpectedIndex {
+			return "", conflict()
 		}
 		if status.Truncated || status.OmittedPaths > 0 {
 			return "", fault(protocol.ErrorCodeUnavailable, "source changes exceed snapshot limits")

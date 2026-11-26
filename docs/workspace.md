@@ -20,13 +20,13 @@ For adding models and organizing sessions, see the [Models guide](https://sailry
 ## Git workbench & checkpoints (`Ctrl+Shift+G`)
 
 - Open **Git** (`Ctrl+Shift+G` panel or the workspace Git page) to inspect repository status, diffs, commits, history, and branches, stage or discard individual hunks, and review per-turn checkpoints created as agents make changes.
-- **Agent Git inspection**: Agents have read-only Git tools to inspect repository status, diffs, commit logs, commit details, blame annotations, and pending workspace changes without running ad-hoc shell commands.
+- **Agent Git inspection**: `git_status` and `git_diff` read status and a single file's diff without a shell. They default to the current worktree; agents can also inspect a registered worktree in the same project by ID.
 
 ## Managed Git worktrees
 
 - Use the project menu or composer worktree selector to create, register, or fork branches into isolated managed worktrees inside `.sailry/worktrees/`.
 - Each worktree keeps its own file scope, terminals, and sessions so multiple tasks or parallel subagents can edit separate checkouts without interfering with each other.
-- **Managing worktrees**: Agents can list, create, register, and remove worktrees. Removing a worktree deletes its checkout folder while keeping the Git branch intact (close active terminals and finish referencing sessions first).
+- **Managing worktrees**: Agents can list, create, register, and remove worktrees. `create_worktree` needs only `branch` for a clean checkout of the current commit. To copy uncommitted changes, pass `include_changes: true` and the source's `head` and `index_revision` from `git_status` as `expected_head` and `expected_index`. If HEAD or the index has changed, creation is rejected. Removing a worktree deletes its checkout folder while keeping the Git branch intact (close active terminals and finish referencing sessions first).
 
 ## Terminals (`Ctrl+\``) and Python runtime
 

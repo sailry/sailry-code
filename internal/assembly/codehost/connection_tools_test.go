@@ -126,6 +126,7 @@ func TestConnectionTools(t *testing.T) {
 	blank, long := target("file", text("note.txt")), target("file", text("note.txt"))
 	blank.Label, long.Label = " ", strings.Repeat("a", 513)
 	labels, roster := "references require distinct targets and bounded labels", "select one role from the frozen session roster"
+	const managedWorktreePrefix = "file tools work only in this turn's worktree; delegate work in a managed worktree with spawn_agent and its worktree ID"
 	for _, rejected := range []struct {
 		name       string
 		session    protocol.Session
@@ -144,7 +145,7 @@ func TestConnectionTools(t *testing.T) {
 		{"unreachable database", session, []protocol.ConversationReference{target("database", &protocol.ConversationReferenceTargetDatabasePayload{Connection: private.ID})}, protocol.ErrorCodePermissionDenied, "referenced database is not available to this conversation"},
 		{"table without database", session, []protocol.ConversationReference{target("database", &protocol.ConversationReferenceTargetDatabasePayload{Connection: shared.ID, Table: &protocol.DatabaseTable{Schema: "public", Name: "users"}})}, protocol.ErrorCodeInvalidRequest, "invalid database reference"},
 		{"parent path", session, []protocol.ConversationReference{target("file", text("../note.txt"))}, protocol.ErrorCodeInvalidRequest, "expected a normalized worktree-relative path"},
-		{"managed worktree path", session, []protocol.ConversationReference{target("directory", text(".sailry/worktrees/other"))}, protocol.ErrorCodePermissionDenied, "file tools work only in this turn's worktree; delegate work in a managed worktree with spawn_agent and its worktree ID, or inspect it with Git tools"},
+		{"managed worktree path", session, []protocol.ConversationReference{target("directory", text(".sailry/worktrees/other"))}, protocol.ErrorCodePermissionDenied, managedWorktreePrefix},
 		{"role outside the roster", session, []protocol.ConversationReference{target("agent", &protocol.RoleReference{ID: protocol.NewRoleID(), Revision: 1})}, protocol.ErrorCodeInvalidRequest, roster},
 		{"two roles", session, []protocol.ConversationReference{target("agent", role(0)), target("agent", role(1))}, protocol.ErrorCodeInvalidRequest, roster},
 		{"missing session", session, []protocol.ConversationReference{target("session", &unknownSession)}, protocol.ErrorCodeNotFound, "session does not exist on this Node"},
@@ -163,8 +164,17 @@ func TestConnectionTools(t *testing.T) {
 		response := nodetest.Dispatch(t, node, node.ID(), protocol.NewRequest(node.ID(), protocol.Command{Kind: "queue_turn", Data: protocol.CommandQueueTurnPayload{
 			Session: rejected.session.ID, ExpectedRevision: rejected.session.Revision, Message: protocol.ConversationInput{Text: "Use this", References: rejected.references},
 		}}))
-		if response.Fault == nil || response.Fault.Code != rejected.code || response.Fault.Message != rejected.message || turns() != before {
-			t.Fatalf("%s: fault %+v, %d turns before and %d after", rejected.name, response.Fault, before, turns())
+		after := turns()
+		if response.Fault == nil || response.Fault.Code != rejected.code || after != before {
+			t.Fatalf("%s: fault %+v, %d turns before and %d after", rejected.name, response.Fault, before, after)
+		}
+		message := response.Fault.Message
+		if rejected.message == managedWorktreePrefix {
+			if !strings.HasPrefix(message, managedWorktreePrefix) {
+				t.Fatalf("%s: fault message %q does not start with %q", rejected.name, message, managedWorktreePrefix)
+			}
+		} else if message != rejected.message {
+			t.Fatalf("%s: fault message %q, want %q", rejected.name, message, rejected.message)
 		}
 	}
 

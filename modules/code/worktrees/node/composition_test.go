@@ -38,7 +38,7 @@ func TestRepositoryModuleCombinations(t *testing.T) {
 			if tc.worktrees {
 				assembly.Modules = append(assembly.Modules, worktreesnode.Module())
 			}
-			names := []string{"git_status", "list_worktrees", "fixture_status", "fixture_worktrees"}
+			names := []string{"git_status", "git_diff", "list_worktrees", "fixture_status", "fixture_worktrees"}
 			script := nodetest.NewScript(nodetest.Step{ID: "discover", Tool: "tool_search", Arguments: nodetest.Arguments(map[string]any{"query": "select:" + strings.Join(names, ","), "limit": len(names)})}, nodetest.Step{ID: "answer"})
 			owner := startNode(t, assembly, script)
 			root := t.TempDir()
@@ -98,7 +98,7 @@ func TestRepositoryModuleCombinations(t *testing.T) {
 			}
 			_, offered := script.Observation("")
 			for name, want := range map[string]bool{
-				"git_status": tc.git, "fixture_status": tc.git,
+				"git_status": tc.git, "git_diff": tc.git, "fixture_status": tc.git,
 				"list_worktrees": tc.worktrees, "fixture_worktrees": tc.worktrees,
 			} {
 				matches := func(tool string) bool { return nodetest.DeclaredToolName(tool) == name }
