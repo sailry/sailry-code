@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/odvcencio/gotreesitter"
+	"github.com/odvcencio/gotreesitter/grammars"
 	codeindexapi "github.com/sailry/sailry-harness/sdk/native/codeindex"
 	core "github.com/sailry/sailry-harness/sdk/native/files"
 	"github.com/sailry/sailry-harness/sdk/native/protocol"
@@ -28,7 +29,12 @@ const (
 	// idleRelease is how long an unused worktree keeps its open index and
 	// its file watch.
 	idleRelease = 2 * time.Minute
+	// grammarCacheLimit caps decoded gotreesitter parse tables retained in
+	// memory during polyglot scans; idle sweeps purge them once unused.
+	grammarCacheLimit = 8
 )
+
+var grammarCacheInit sync.Once
 
 // Service owns the code indexes of a profile, one per worktree.
 type Service struct {
@@ -46,6 +52,8 @@ type Service struct {
 	mutex       sync.Mutex
 	enabled     bool
 	worktrees   map[protocol.WorktreeID]*worktree
+	active      int
+	lastUsed    time.Time
 }
 
 type worktree struct {
@@ -121,6 +129,11 @@ func NewService(profile string, watch Watch) codeindexapi.Service {
 
 // New returns the enabled index service of a profile directory.
 func New(profile string, watch Watch) *Service {
+	grammarCacheInit.Do(func() {
+		if _, limit := grammars.EmbeddedLanguageCacheStats(); limit < 0 {
+			grammars.SetEmbeddedLanguageCacheLimit(grammarCacheLimit)
+		}
+	})
 	closed, cancel := context.WithCancel(context.Background())
 	service := &Service{profile: profile, watch: watch, parser: &Parser{}, inspectText: (*core.Files).InspectText, parsing: make(chan struct{}, readers), closed: closed, close: cancel, enabled: true, worktrees: map[protocol.WorktreeID]*worktree{}}
 	go func() {
@@ -158,11 +171,19 @@ func (s *Service) releaseIdle(now time.Time) {
 			delete(s.worktrees, id)
 		}
 	}
+	purgeGrammars := len(s.worktrees) == 0 && s.active == 0 && !s.lastUsed.IsZero() && now.Sub(s.lastUsed) >= idleRelease
+	if purgeGrammars {
+		s.lastUsed = time.Time{}
+	}
 	s.mutex.Unlock()
 	for _, wt := range idle {
 		wt.stop()
 		_ = wt.closeIndex()
 		wt.access.Unlock()
+	}
+	if purgeGrammars {
+		grammars.PurgeEmbeddedLanguageCache()
+		gotreesitter.DrainArenaPools()
 	}
 }
 
@@ -252,7 +273,15 @@ func (s *Service) Configure(enabled bool) {
 		s.mutex.Lock()
 		clear(s.worktrees)
 		s.live.clear()
+		purgeGrammars := s.active == 0 && !s.lastUsed.IsZero()
+		if purgeGrammars {
+			s.lastUsed = time.Time{}
+		}
 		s.mutex.Unlock()
+		if purgeGrammars {
+			grammars.PurgeEmbeddedLanguageCache()
+			gotreesitter.DrainArenaPools()
+		}
 	}
 }
 
@@ -345,15 +374,20 @@ func (s *Service) begin(ctx context.Context, id protocol.WorktreeID, root string
 		return nil, nil, nil, err
 	}
 	w.access.RLock()
+	s.active++
+	s.lastUsed = time.Now()
 	s.mutex.Unlock()
 	ctx, cancel := context.WithCancel(ctx)
 	detach := context.AfterFunc(w.stopped, cancel)
 	end := func() {
+		now := time.Now()
+		s.mutex.Lock()
+		s.active--
+		s.lastUsed = now
 		if persistent {
-			s.mutex.Lock()
-			w.used = time.Now()
-			s.mutex.Unlock()
+			w.used = now
 		}
+		s.mutex.Unlock()
 		w.access.RUnlock()
 		detach()
 		cancel()
