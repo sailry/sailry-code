@@ -65,7 +65,7 @@
     {
       "name": "code_outline",
       "legacy_package": "code",
-      "description": "List the declarations in one file (functions, types, methods) with line ranges. Use before reading a large file.",
+      "description": "List the declarations in one file (functions, types, methods) with line ranges. Use to locate a section before reading a large file.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -112,7 +112,7 @@
       "name": "code_context",
       "legacy_package": "code",
       "initial": true,
-      "description": "Look up symbol definitions and read their source in one call. For the first match, include callers, callees and impacted files inferred by name.",
+      "description": "Find a symbol's definition and source in one call. The first match also lists name-inferred callers, callees and impacted files. Inspect relevant matches when tracing behavior or checking compatibility.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -185,7 +185,7 @@
     {
       "name": "code_impact",
       "legacy_package": "code",
-      "description": "Before changing code, list the definitions and files that refer to a symbol, the definition at a file line, or a set of changed files, up to three reference hops away. References are matched by name; check confidence and ambiguous before relying on an edge.",
+      "description": "List definitions and files that refer to a symbol, a definition at a file line, or changed files, up to three reference hops away. Use when a change or review depends on finding affected callers. References are matched by name; check confidence and ambiguous before relying on an edge.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -270,7 +270,7 @@
     {
       "name": "code_map",
       "legacy_package": "code",
-      "description": "Rank the worktree's most referenced files with their key declarations and signatures, for orientation before exploring. Optional paths focus the ranking on files related to them; use next_offset for more files.",
+      "description": "Rank the worktree's most referenced files with their key declarations and signatures when orienting in an unfamiliar codebase. Skip when you already know the target file or symbol. Optional paths focus the ranking on files related to them; use next_offset for more files.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
