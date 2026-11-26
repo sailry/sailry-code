@@ -13,12 +13,12 @@ dependencies:
   sailry_mobile:
     git:
       url: https://github.com/sailry/sailry-harness.git
-      ref: 2def2482f4275745e6915454508c43aa7af3a3c4
+      ref: 4d9d9c2a4812d0080b117192ed08f39d00cebaf7
       path: apps/mobile
   sailry_bridge:
     git:
       url: https://github.com/sailry/sailry-harness.git
-      ref: 2def2482f4275745e6915454508c43aa7af3a3c4
+      ref: 4d9d9c2a4812d0080b117192ed08f39d00cebaf7
       path: apps/mobile/packages/sailry_bridge
   shared_preferences: 2.5.5
 
