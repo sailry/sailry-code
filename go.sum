@@ -487,8 +487,8 @@ github.com/rogpeppe/go-internal v1.16.0 h1:O9DK+vNMDVGLr2BeZqmpLeMjiMNkuXfcqntWb
 github.com/rogpeppe/go-internal v1.16.0/go.mod h1:DrUVZyrJU+txYW5/1kwtXQSMFio52ZOxX7yM1VHvnxs=
 github.com/rs/xid v1.6.0 h1:fV591PaemRlL6JfRxGDEPl69wICngIQ3shQtzfy2gxU=
 github.com/rs/xid v1.6.0/go.mod h1:7XoLgs4eV+QndskICGsho+ADou8ySMSjJKDIan90Nz0=
-github.com/sailry/sailry-harness v0.2.14-0.20261126114205-708b8db77500 h1:NCwot0BMoyYx4mEIIlAvyTrCvsnDU7KX0aRKXKF/GQc=
-github.com/sailry/sailry-harness v0.2.14-0.20261126114205-708b8db77500/go.mod h1:PInvlAfNvKtHeLhBMZ4+U7XvyvJx9Xl5ki3AizlJOdo=
+github.com/sailry/sailry-harness v0.2.14-0.20261126120225-a8a9d705d38d h1:B1naBz4+/VEQw3dC+1WdPd4iM66Fq7l/8UrSpPUGhi0=
+github.com/sailry/sailry-harness v0.2.14-0.20261126120225-a8a9d705d38d/go.mod h1:PInvlAfNvKtHeLhBMZ4+U7XvyvJx9Xl5ki3AizlJOdo=
 github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 h1:1EYB5IzjZawrrnELUi78f9fPu57HuXjmddZPjrls/28=
 github.com/santhosh-tekuri/jsonschema/v6 v6.0.3/go.mod h1:JXeL+ps8p7/KNMjDQk3TCwPpBy0wYklyWTfbkIzdIFU=
 github.com/sebdah/goldie/v2 v2.8.0 h1:dZb9wR8q5++oplmEiJT+U/5KyotVD+HNGCAc5gNr8rc=
