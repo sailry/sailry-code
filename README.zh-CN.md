@@ -40,10 +40,10 @@
 ## 桌面预览
 
 <p align="center">
-  <img src="assets/readme/desktop-session.webp" width="100%" alt="Sailry 桌面版的项目和会话栏，以及右侧正在评审 API 设计的智能体会话。">
+  <img src="assets/readme/desktop-home.webp" width="100%" alt="macOS 壁纸衬托下的 Sailry 桌面首页，左侧是项目栏，中央是快捷操作。">
 </p>
 
-<p align="center"><em>早期 Sailry 桌面版中的智能体会话。</em></p>
+<p align="center"><em>早期 Sailry 桌面版的首页。</em></p>
 
 ## 工作方式
 

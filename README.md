@@ -40,10 +40,10 @@ Find Desktop and Host installers on [Sailry Code Releases](https://github.com/sa
 ## Desktop preview
 
 <p align="center">
-  <img src="assets/readme/desktop-session.webp" width="100%" alt="Sailry desktop with a project and session sidebar next to an agent reviewing an API design.">
+  <img src="assets/readme/desktop-home.webp" width="100%" alt="Sailry desktop home screen with a project sidebar and quick actions, framed by a macOS wallpaper.">
 </p>
 
-<p align="center"><em>Agent session in an earlier Sailry desktop build.</em></p>
+<p align="center"><em>Home screen in an earlier Sailry desktop build.</em></p>
 
 ## How it works
 
