@@ -97,6 +97,8 @@ jobs:
       - name: Closed workflow fixtures
         run: python3 -B -m unittest discover -s .github/scripts -p 'test_*.py'
       - uses: ./.github/actions/harness
+      - name: Linux command sandbox
+        run: bash "$SAILRY_HARNESS_DIR/.github/scripts/setup-linux-command-sandbox.sh"
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: code-native-linux-amd64
