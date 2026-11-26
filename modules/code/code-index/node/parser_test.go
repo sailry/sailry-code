@@ -21,9 +21,10 @@ const (
 	htmlFixture = "<p>中文</p>\n<script type=\"application/typescript\">function hello(name: string) { return name; }</script>\n<style>.notice { color: red; }</style>"
 )
 
-// TestCodeOutline replays the outline fixtures of the Rust code index.
+// TestCodeOutline replays the outline fixtures of the Rust code index. Run it
+// separately from concurrent index builds so CPU contention under -race does
+// not consume the parser's per-file deadline.
 func TestCodeOutline(t *testing.T) {
-	t.Parallel()
 	var parser Parser
 	ctx := context.Background()
 	for _, fixture := range []struct {
