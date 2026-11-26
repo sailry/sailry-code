@@ -724,14 +724,14 @@ func TestCodeAgentTools(t *testing.T) {
 	}
 }
 
-func TestCodeContextAdmitsPatchWithoutReread(t *testing.T) {
+func TestCodeContextAdmitsEditWithoutReread(t *testing.T) {
 	requireCodeIndex(t)
-	patch := nodetest.Arguments(map[string]string{"input": "*** Begin Patch\n*** Update File: sample.go\n@@\n-func Sample() {}\n+func Sample() { return }\n*** End Patch"})
+	edit := nodetest.Arguments(map[string]string{"path": "sample.go", "old_text": "func Sample() {}", "new_text": "func Sample() { return }"})
 	script := nodetest.NewScript(
 		nodetest.Step{ID: "search", Tool: "code_search", Arguments: nodetest.Arguments(map[string]string{"name": "Sample"})},
-		nodetest.Step{ID: "unread", Tool: "apply_patch", Arguments: patch},
+		nodetest.Step{ID: "unread", Tool: "edit_file", Arguments: edit},
 		nodetest.Step{ID: "context", Tool: "code_context", Arguments: nodetest.Arguments(map[string]string{"name": "Sample"})},
-		nodetest.Step{ID: "patch", Tool: "apply_patch", Arguments: patch},
+		nodetest.Step{ID: "edit", Tool: "edit_file", Arguments: edit},
 		nodetest.Step{ID: "answer"},
 	)
 	assembly := native.Assembly{Modules: []native.Module{codeindex.Module(), filesnode.Module()}}
@@ -746,16 +746,16 @@ func TestCodeContextAdmitsPatchWithoutReread(t *testing.T) {
 	_, results := nodetest.Turn(t, node, session, "Edit the sample function", nodetest.Wait, func(protocol.ConversationApproval) { approvals++ })
 	nodetest.Result(t, results, "search", "code_search")
 	if unread := results["unread"]; unread == nil || !strings.Contains(string(unread.Result.Value), "has not been read") {
-		t.Fatalf("patch after symbol search: %+v", unread)
+		t.Fatalf("edit after symbol search: %+v", unread)
 	}
 	nodetest.Result(t, results, "context", "code_context")
-	nodetest.Result(t, results, "patch", "apply_patch")
+	nodetest.Result(t, results, "edit", "edit_file")
 	if approvals != 1 {
-		t.Fatalf("patch requested %d approvals, want 1", approvals)
+		t.Fatalf("edit requested %d approvals, want 1", approvals)
 	}
 	content, err := os.ReadFile(filepath.Join(root, "sample.go"))
 	if err != nil || string(content) != "package sample\n\nfunc Sample() { return }\n" {
-		t.Fatalf("patch left %q: %v", content, err)
+		t.Fatalf("edit left %q: %v", content, err)
 	}
 }
 
