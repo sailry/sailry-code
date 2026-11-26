@@ -245,9 +245,9 @@ class WorkflowConfigurationTests(unittest.TestCase):
                     self.assertIn(f"      {secret}: ${{{{ inputs.distribution && secrets.{secret} || '' }}}}", job)
                 upload = job.split("      - uses: actions/upload-artifact@", 1)[1]
                 self.assertIn("        if: inputs.distribution\n", upload)
-        native = workflow.split("\n  native:\n", 1)[1].split("\n  macos:\n", 1)[0]
-        upload = native.split("      - uses: actions/upload-artifact@", 1)[1]
-        self.assertNotIn("        if: inputs.distribution\n", upload)
+        action = (ROOT / ".github/actions/native-runtime/action.yml").read_text()
+        upload = action.split("    - uses: actions/upload-artifact@", 1)[1]
+        self.assertNotIn("if: inputs.distribution", upload)
 
     def test_mobile_policy_does_not_receive_credentials_without_upload_request(self):
         workflow = (ROOT / ".github/workflows/mobile.yml").read_text()
@@ -259,7 +259,7 @@ class WorkflowConfigurationTests(unittest.TestCase):
     def test_moved_integration_suites_have_database_fixtures_and_release_coverage(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         job = workflow.split("\n  integration:\n", 1)[1].split("\n  repository-integration:\n", 1)[0]
-        self.assertIn("    needs: native\n", job)
+        self.assertIn("    needs: native-linux\n", job)
         self.assertIn("    if: inputs.integration || inputs.distribution\n", job)
         self.assertIn("    runs-on: ubuntu-24.04\n", job)
         self.assertIn("      - uses: ./.github/actions/harness\n", job)
@@ -301,7 +301,7 @@ raise SystemExit(int(os.environ["FIXTURE_STATUS"]))
     def test_repository_integration_preserves_engine_platform_coverage(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         job = workflow.split("\n  repository-integration:\n", 1)[1].split("\n  native:\n", 1)[0]
-        self.assertIn("    needs: native\n", job)
+        self.assertIn("    needs: [native-linux, native]\n", job)
         self.assertIn("    if: inputs.integration || inputs.distribution\n", job)
         for target in ["linux-amd64", "darwin-arm64", "windows-amd64"]:
             self.assertIn(f"target: {target}, turso:", job)
@@ -330,14 +330,50 @@ print(json.dumps([os.environ.get("GOPROXY"), sys.argv[1:]]))
 
     def test_go_checks_download_native_linux_runtime_before_running_tests(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text()
-        checks = text.split("  checks:\n", 1)[1].split("\n  native:\n", 1)[0]
+        native_linux = text.split("  native-linux:\n", 1)[1].split("\n  checks:\n", 1)[0]
+        checks = text.split("  checks:\n", 1)[1].split("\n  integration:\n", 1)[0]
         native = text.split("  native:\n", 1)[1].split("\n  macos:\n", 1)[0]
-        self.assertIn("    needs: native\n", checks)
-        self.assertNotIn("    needs:", native)
+        self.assertIn("    needs: [scope, native-linux]\n", checks)
+        self.assertIn("          target: linux-amd64\n", native_linux)
+        self.assertNotIn("linux-amd64", native)
         self.assertIn("      SAILRY_TURSO_LIB: ${{ github.workspace }}/.runtime/native/linux-amd64/libturso_sync_sdk_kit.so\n", checks)
         self.assertIn("          name: code-native-linux-amd64\n          path: .runtime/native/linux-amd64\n", checks)
         self.assertLess(checks.index("uses: actions/download-artifact@"), checks.index("name: Verify Go test runtime"))
         self.assertLess(checks.index("name: Verify Go test runtime"), checks.index("go test ./..."))
+        self.assertIn("go vet -tags integration ./...", checks)
+        self.assertIn("go test -race", checks)
+
+    def test_ci_scope_skips_heavy_packaging_on_module_only_pull_requests(self):
+        def run_scope(*, event="pull_request", changed="", distribution="false", integration="false"):
+            with tempfile.TemporaryDirectory(prefix="code-ci-scope-") as temporary:
+                output = Path(temporary) / "output"
+                env = {
+                    **os.environ,
+                    "GITHUB_EVENT_NAME": event,
+                    "CHANGED_FILES": changed,
+                    "DISTRIBUTION": distribution,
+                    "INTEGRATION": integration,
+                    "GITHUB_OUTPUT": str(output),
+                }
+                subprocess.run(["bash", str(ROOT / ".github/scripts/ci-scope.sh")], env=env, check=True)
+                return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+        self.assertEqual(run_scope(changed="README.md\ndocs/guide.md\n"), {"go": "false", "packages": "false"})
+        self.assertEqual(run_scope(changed="modules/code/code-index/node/service.go\n"), {"go": "true", "packages": "false"})
+        self.assertEqual(run_scope(changed="modules/code/git/service/executable_windows.go\n"), {"go": "true", "packages": "true"})
+        self.assertEqual(run_scope(changed="modules/code/terminal/node/service.go\n"), {"go": "true", "packages": "true"})
+        self.assertEqual(run_scope(changed="cmd/sailry-code-desktop/main.go\n"), {"go": "true", "packages": "true"})
+        self.assertEqual(run_scope(event="push", changed="modules/code/code-index/node/service.go\n"), {"go": "true", "packages": "true"})
+        self.assertEqual(run_scope(changed="README.md\n", distribution="true"), {"go": "true", "packages": "true"})
+
+    def test_platform_tests_cover_macos_and_windows_os_packages(self):
+        text = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = text.split("\n  platform-tests:\n", 1)[1].split("\n  macos:\n", 1)[0]
+        self.assertIn("    needs: [scope, native]\n", job)
+        for target in ["darwin-arm64", "windows-amd64"]:
+            self.assertIn(f"target: {target}", job)
+        for pkg in ["./modules/code/code-index/node", "./modules/code/git/service", "./modules/code/databases/service", "./modules/code/terminal/node"]:
+            self.assertIn(pkg, job)
 
     def test_go_runtime_verification_rejects_missing_or_corrupt_library(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text()

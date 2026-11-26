@@ -45,8 +45,45 @@ env:
   SAILRY_REVISION: ${{ github.sha }}
 
 jobs:
+  scope:
+    runs-on: ubuntu-24.04
+    outputs:
+      go: ${{ steps.scope.outputs.go }}
+      packages: ${{ steps.scope.outputs.packages }}
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Changed inputs
+        id: scope
+        env:
+          BEFORE: ${{ github.event.before }}
+          DISTRIBUTION: ${{ inputs.distribution }}
+          INTEGRATION: ${{ inputs.integration }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash .github/scripts/ci-scope.sh
+
+  native-linux:
+    needs: scope
+    if: ${{ inputs.distribution || inputs.integration || needs.scope.outputs.go == 'true' }}
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/harness
+      - uses: ./.github/actions/native-runtime
+        with:
+          target: linux-amd64
+
   checks:
-    needs: native
+    needs: [scope, native-linux]
+    if: ${{ inputs.distribution || inputs.integration || needs.scope.outputs.go == 'true' }}
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -77,11 +114,28 @@ jobs:
           export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=0
           files=$(git ls-files -z '*.go' | xargs -0 gofmt -l)
           test -z "$files" || { printf 'gofmt differs:\n%s\n' "$files" >&2; exit 1; }
-          go vet ./...
+          pids=()
+          for goos in linux windows darwin; do
+            GOOS=$goos go vet -tags integration ./... &
+            pids+=($!)
+          done
+          status=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || status=1
+          done
+          test "$status" -eq 0
           go test ./...
+      - name: Race detector
+        run: |
+          set -euo pipefail
+          unset GOROOT
+          export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=1
+          go test -race -p 2 -parallel 4 \
+            ./modules/code/code-index/node ./modules/code/ssh/service ./modules/code/databases/service \
+            ./modules/code/git/service ./modules/code/terminal/node ./modules/code/worktrees/node
 
   integration:
-    needs: native
+    needs: native-linux
     if: inputs.integration || inputs.distribution
     runs-on: ubuntu-24.04
     defaults:
@@ -150,7 +204,7 @@ jobs:
             ./modules/code/ssh/service ./modules/code/databases/service ./modules/code/code-index/node ./internal/assembly/codehost
 
   repository-integration:
-    needs: native
+    needs: [native-linux, native]
     if: inputs.integration || inputs.distribution
     strategy:
       fail-fast: false
@@ -206,11 +260,12 @@ jobs:
           go test -p 1 -timeout 20m -tags integration "${packages[@]}"
 
   native:
+    needs: scope
+    if: ${{ inputs.distribution || inputs.integration || needs.scope.outputs.packages == 'true' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, target: linux-amd64 }
           - { os: ubuntu-24.04-arm, target: linux-arm64 }
           - { os: macos-15, target: darwin-arm64 }
           - { os: macos-15-intel, target: darwin-amd64 }
@@ -219,91 +274,67 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: .runtime/harness
     steps:
       - name: Repository line endings
         if: runner.os == 'Windows'
-        working-directory: ${{ github.workspace }}
         run: git config --global core.autocrlf false
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
           persist-credentials: false
       - uses: ./.github/actions/harness
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        id: native
+      - uses: ./.github/actions/native-runtime
         with:
+          target: ${{ matrix.target }}
+
+  platform-tests:
+    needs: [scope, native]
+    if: ${{ inputs.distribution || inputs.integration || needs.scope.outputs.packages == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, target: darwin-arm64, turso: libturso_sync_sdk_kit.dylib }
+          - { os: windows-2025, target: windows-amd64, turso: turso_sync_sdk_kit.dll }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SAILRY_TURSO_LIB: ${{ github.workspace }}/.runtime/native/${{ matrix.target }}/${{ matrix.turso }}
+    steps:
+      - name: Repository line endings
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/harness
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: code-native-${{ matrix.target }}
           path: .runtime/native/${{ matrix.target }}
-          key: code-native-v1-${{ matrix.target }}-${{ hashFiles('.runtime/harness/native/turso/Cargo.toml', '.runtime/harness/native/turso/Cargo.lock', '.runtime/harness/native/turso/rust-toolchain.toml', '.runtime/harness/native/turso/build.sh', '.runtime/harness/native/turso/src/**', '.runtime/harness/native/capture/**', '.runtime/harness/native/windows/crt.ps1') }}
-      - name: Pinned Rust toolchain
-        if: steps.native.outputs.cache-hit != 'true'
-        working-directory: .runtime/harness/native/turso
-        run: rustup toolchain install
-      - uses: mlugg/setup-zig@8d6198c65fb0feaa111df26e6b467fea8345e46f # v2.0.5
-        if: runner.os == 'Linux' && steps.native.outputs.cache-hit != 'true'
-        with:
-          version: 0.16.0
-          use-cache: true
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        if: runner.os == 'Linux' && steps.native.outputs.cache-hit != 'true'
-        with:
-          path: ~/.cargo/bin/cargo-zigbuild
-          key: cargo-zigbuild-v1-${{ runner.os }}-${{ runner.arch }}-0.23.4
-      - name: Native libraries
-        if: steps.native.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          if test "$RUNNER_OS" = Linux; then
-            if test ! -x "$HOME/.cargo/bin/cargo-zigbuild"; then
-              cargo install cargo-zigbuild --version 0.23.4 --locked
-            fi
-            export SAILRY_GLIBC=2.34
-          fi
-          sh native/turso/build.sh
-          if test "$RUNNER_OS" != Linux; then sh native/capture/build.sh; fi
-      - name: Windows C++ runtime
-        if: runner.os == 'Windows' && steps.native.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: ./native/windows/crt.ps1
-      - name: Gather native libraries
-        if: steps.native.outputs.cache-hit != 'true'
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          cd ".runtime/native/$TARGET"
-          case "$RUNNER_OS" in
-            Windows)
-              set -- turso_sync_sdk_kit.dll sailry-capture.dll windows-crt.json
-              while IFS= read -r name; do set -- "$@" "$name"; done < <(jq -r '.files[]' windows-crt.json | tr -d '\r')
-              ;;
-            macOS) set -- libturso_sync_sdk_kit.dylib libsailry-capture.dylib ;;
-            *) set -- libturso_sync_sdk_kit.so ;;
-          esac
-          output="$GITHUB_WORKSPACE/.runtime/native/$TARGET"
-          mkdir -p "$output"
-          for name in "$@"; do
-            cp "$name" "$output/$name"
-            if command -v sha256sum >/dev/null; then sum=$(sha256sum "$name"); else sum=$(shasum -a 256 "$name"); fi
-            printf '%s  %s\n' "${sum%% *}" "$name"
-          done > "$output/SHA256SUMS"
-      - name: Verify native libraries
+      - name: Verify platform test runtime
         working-directory: .runtime/native/${{ matrix.target }}
         run: |
           set -euo pipefail
-          if command -v sha256sum >/dev/null; then sha256sum --check SHA256SUMS; else shasum -a 256 --check SHA256SUMS; fi
-          if test "$RUNNER_OS" = Linux; then
-            needed=$(objdump -T libturso_sync_sdk_kit.so | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -V | tail -n 1)
-            test "$(printf '%s\n%s\n' "$needed" 2.34 | sort -V | tail -n 1)" = 2.34
+          if command -v sha256sum >/dev/null; then
+            sha256sum --check SHA256SUMS
+          else
+            shasum -a 256 --check SHA256SUMS
           fi
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: code-native-${{ matrix.target }}
-          path: .runtime/native/${{ matrix.target }}/
-          include-hidden-files: true
-          if-no-files-found: error
+          test -f "$SAILRY_TURSO_LIB"
+      - name: Platform-sensitive Go tests
+        run: |
+          set -euo pipefail
+          unset GOROOT
+          export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=0
+          go test -p 1 -timeout 20m \
+            ./modules/code/code-index/node ./modules/code/git/service \
+            ./modules/code/databases/service ./modules/code/terminal/node
 
   macos:
-    needs: [checks, native]
+    needs: [scope, checks, native]
+    if: ${{ inputs.distribution || needs.scope.outputs.packages == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -394,7 +425,8 @@ jobs:
           rm -f -- "$RUNNER_TEMP/code-signing.p12" "$RUNNER_TEMP/code-notary.p8"
 
   windows:
-    needs: [checks, native]
+    needs: [scope, checks, native]
+    if: ${{ inputs.distribution || needs.scope.outputs.packages == 'true' }}
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -442,7 +474,8 @@ jobs:
           compression-level: 0
 
   host-linux:
-    needs: [checks, native]
+    needs: [scope, checks, native-linux, native]
+    if: ${{ inputs.distribution || needs.scope.outputs.packages == 'true' }}
     strategy:
       fail-fast: false
       matrix:
