@@ -5,6 +5,7 @@ package codeindex
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	core "github.com/sailry/sailry-harness/sdk/native/files"
@@ -25,7 +26,6 @@ func TestScanBudgetKeepsFinishedPrefix(t *testing.T) {
 	defer func() { w.sync <- progress }()
 	previous := progress.verified["a.rs"]
 	l := defaultLimits()
-	l.deadline = time.Now().Add(time.Second)
 	blocked := false
 	f.service.inspectText = func(files *core.Files, ctx context.Context, path string, limit int, stamp core.FileStamp, inspect func(*string) error) (core.FileStamp, error) {
 		if path == "z.rs" {
@@ -40,9 +40,13 @@ func TestScanBudgetKeepsFinishedPrefix(t *testing.T) {
 		}
 		return files.InspectText(ctx, path, limit, stamp, inspect)
 	}
-	report, err := f.service.synchronize(t.Context(), w, w.index, progress, l)
-	if !blocked || err != nil || !report.partial || !report.truncated || len(report.problems) != 0 || progress.scan == nil || len(progress.scan.ready) != 2 || progress.records.revision != baseline.IndexRevision {
-		t.Fatalf("budget did not keep precisely the completed parses: report=%+v scan=%+v err=%v", report, progress.scan, err)
+	var result report
+	synctest.Test(t, func(t *testing.T) {
+		l.deadline = time.Now().Add(time.Second)
+		result, err = f.service.synchronize(t.Context(), w, w.index, progress, l)
+	})
+	if !blocked || err != nil || !result.partial || !result.truncated || len(result.problems) != 0 || progress.scan == nil || len(progress.scan.ready) != 2 || progress.records.revision != baseline.IndexRevision {
+		t.Fatalf("budget did not keep precisely the completed parses: report=%+v scan=%+v err=%v", result, progress.scan, err)
 	}
 	equal(t, "unfinished work", progress.scan.pending, []string{"a.rs", "b.rs", "z.rs"})
 	f.service.inspectText = (*core.Files).InspectText
@@ -51,9 +55,9 @@ func TestScanBudgetKeepsFinishedPrefix(t *testing.T) {
 	f.write("b.rs", "pub fn latest() {}\n")
 	l = defaultLimits()
 	l.batches = 1
-	report, err = f.service.synchronize(t.Context(), w, w.index, progress, l)
-	if err != nil || !report.partial || progress.scan == nil || len(progress.scan.ready) != 0 || progress.records.revision != baseline.IndexRevision+1 {
-		t.Fatalf("prefix did not commit independently: report=%+v scan=%+v err=%v", report, progress.scan, err)
+	result, err = f.service.synchronize(t.Context(), w, w.index, progress, l)
+	if err != nil || !result.partial || progress.scan == nil || len(progress.scan.ready) != 0 || progress.records.revision != baseline.IndexRevision+1 {
+		t.Fatalf("prefix did not commit independently: report=%+v scan=%+v err=%v", result, progress.scan, err)
 	}
 	equal(t, "only interrupted file remains", progress.scan.pending, []string{"z.rs"})
 	equal(t, "incomplete pass did not publish new proofs", progress.verified["a.rs"], previous)
@@ -65,9 +69,9 @@ func TestScanBudgetKeepsFinishedPrefix(t *testing.T) {
 			t.Fatalf("wrong resumed %s: %+v, %v", path, page, err)
 		}
 	}
-	report, err = f.service.synchronize(t.Context(), w, w.index, progress, defaultLimits())
-	if err != nil || report.partial || report.truncated || len(report.problems) != 0 || progress.scan != nil || progress.records.revision != baseline.IndexRevision+2 || progress.records.entries["z.rs"].state.Status != StatusParsed {
-		t.Fatalf("remaining file did not resume: report=%+v err=%v", report, err)
+	result, err = f.service.synchronize(t.Context(), w, w.index, progress, defaultLimits())
+	if err != nil || result.partial || result.truncated || len(result.problems) != 0 || progress.scan != nil || progress.records.revision != baseline.IndexRevision+2 || progress.records.entries["z.rs"].state.Status != StatusParsed {
+		t.Fatalf("remaining file did not resume: report=%+v err=%v", result, err)
 	}
 	if previous.hash != "" && progress.verified["a.rs"].hash != Hash("pub fn checked() {}\n") {
 		t.Fatal("completed pass did not publish its new proof")
