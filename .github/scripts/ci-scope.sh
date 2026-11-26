@@ -42,7 +42,7 @@ else
 fi
 
 if [ "$have_changed" = true ] && [ -n "$changed" ]; then
-  non_go_paths='^(docs/|third_party_licenses/|\.github/ISSUE_TEMPLATE/|\.github/pull_request_template\.md$|(README|CONTRIBUTING|ARCHITECTURE|AGENTS|CHANGELOG|SECURITY|LICENSE[^/]*)\.md$|LICENSE$)'
+  non_go_paths='^(docs/|third_party_licenses/|\.github/ISSUE_TEMPLATE/|\.github/pull_request_template\.md$|(README(\.zh-CN)?|CONTRIBUTING|ARCHITECTURE|AGENTS|CHANGELOG|SECURITY|LICENSE[^/]*)\.md$|LICENSE$)'
   go_inputs=$(grep -Ev "$non_go_paths" <<<"$changed" || true)
   if [ -z "$go_inputs" ]; then
     go_checks=false

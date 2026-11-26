@@ -358,7 +358,7 @@ print(json.dumps([os.environ.get("GOPROXY"), sys.argv[1:]]))
                 subprocess.run(["bash", str(ROOT / ".github/scripts/ci-scope.sh")], env=env, check=True)
                 return dict(line.split("=", 1) for line in output.read_text().splitlines())
 
-        self.assertEqual(run_scope(changed="README.md\ndocs/guide.md\n"), {"go": "false", "packages": "false"})
+        self.assertEqual(run_scope(changed="README.md\nREADME.zh-CN.md\ndocs/guide.md\n"), {"go": "false", "packages": "false"})
         self.assertEqual(run_scope(changed="modules/code/code-index/node/service.go\n"), {"go": "true", "packages": "false"})
         self.assertEqual(run_scope(changed="modules/code/git/service/executable_windows.go\n"), {"go": "true", "packages": "true"})
         self.assertEqual(run_scope(changed="modules/code/terminal/node/service.go\n"), {"go": "true", "packages": "true"})
