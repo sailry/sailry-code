@@ -111,7 +111,8 @@
     {
       "name": "code_context",
       "legacy_package": "code",
-      "description": "Find a definition by name and return its source with its callers, callees and impacted files in one call. Use instead of code_search followed by read_file.",
+      "initial": true,
+      "description": "Look up symbol definitions and read their source in one call. For the first match, include callers, callees and impacted files inferred by name.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -409,6 +410,5 @@
         }
       }
     }
-  ],
-  "instructions": "Use code_search for symbol definitions, code_context for a definition with callers/callees in one call, code_outline for a file's declarations, code_impact before changing a shared cross-file symbol, and code_map to orient in an unfamiliar worktree. Graph edges match by name without type info (check confidence/ambiguous on important edges). These tools read saved source only (use search_files for text/comments, builds/tests for verification); line numbers are 1-based and paths are worktree-relative. Re-run after a revision conflict."
+  ]
 }

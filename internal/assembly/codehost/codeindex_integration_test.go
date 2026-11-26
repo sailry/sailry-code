@@ -24,7 +24,7 @@ func TestCodeAgentToolsWithoutIndex(t *testing.T) {
 	requested := []string{pipeline, read, "code_search", "code_outline", "code_context", "code_impact", "code_map"}
 	steps := []nodetest.Step{
 		nodetest.Step{ID: "discover", Tool: "tool_search", Arguments: nodetest.Arguments(map[string]any{"query": "select:" + strings.Join(requested, ","), "limit": len(requested)})},
-		nodetest.Step{ID: "pipeline", Tool: pipeline, Arguments: nodetest.Arguments(json.RawMessage(`{"steps":[{"operation":"files.find","arguments":{"globs":["cmd/server.go"]}},{"operation":"files.read_lines","arguments":{"limit":1},"from_previous":{"path":"/paths/0"}}],"select":"/lines/0/text"}`))},
+		nodetest.Step{ID: "pipeline", Tool: "call_tool", Arguments: nodetest.Arguments(map[string]any{"name": pipeline, "arguments": json.RawMessage(`{"steps":[{"operation":"files.find","arguments":{"globs":["cmd/server.go"]}},{"operation":"files.read_lines","arguments":{"limit":1},"from_previous":{"path":"/paths/0"}}],"select":"/lines/0/text"}`)})},
 		nodetest.Step{ID: "answer"},
 	}
 	script := nodetest.NewScript(steps...)
@@ -58,12 +58,13 @@ func TestCodeAgentToolsWithoutIndex(t *testing.T) {
 		}
 	}
 	slices.Sort(initial)
-	if want := []string{"code_pipeline", "read_file"}; !slices.Equal(initial, want) {
+	if want := []string{"read_file"}; !slices.Equal(initial, want) {
 		t.Fatalf("initial request without an index offered %v among the requested tools, want %v", initial, want)
 	}
 	discovered := nodetest.Result(t, results, "discover", "tool_search")
-	if tools, ok := discovered["tools"].([]any); !ok || len(tools) != 0 {
-		t.Fatalf("tool discovery without an index returned %v, want an empty tools array", discovered)
+	tools := discovered["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["name"] != pipeline {
+		t.Fatalf("tool discovery without an index returned %v, want only %s", tools, pipeline)
 	}
 	if result := nodetest.Result(t, results, "pipeline", pipeline); strings.TrimSpace(fmt.Sprint(result["value"])) != "package main" {
 		t.Fatalf("file-only pipeline returned %v", result)

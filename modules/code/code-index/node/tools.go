@@ -57,10 +57,6 @@ func (module) ToolsForTurn(_ context.Context, host native.Host, inv *native.Agen
 		return nil, err
 	}
 	hasIndex := host.HasCodeIndex()
-	instruction := catalog.Instructions
-	if !hasIndex {
-		instruction = ""
-	}
 	tools := make([]native.Tool, 0, len(catalog.Tools))
 	for _, spec := range catalog.Tools {
 		if !spec.Available(inv) {
@@ -71,10 +67,7 @@ func (module) ToolsForTurn(_ context.Context, host native.Host, inv *native.Agen
 			if !hasIndex {
 				continue
 			}
-			tool, err := host.WorkspaceTool(inv, native.WorkspaceToolConfig{
-				Spec:        spec,
-				Instruction: instruction,
-			})
+			tool, err := host.WorkspaceTool(inv, native.WorkspaceToolConfig{Spec: spec})
 			if err != nil {
 				return nil, err
 			}
@@ -85,7 +78,7 @@ func (module) ToolsForTurn(_ context.Context, host native.Host, inv *native.Agen
 			}
 			spec.ReadOnly, spec.Concurrent = true, true
 			spec.StreamRead = inv.Worktree.Project != nil
-			tool, err := native.BuildCustomTool(spec, instruction, func(ctx context.Context, call native.ToolRequest) native.ToolResult {
+			tool, err := native.BuildCustomTool(spec, "", func(ctx context.Context, call native.ToolRequest) native.ToolResult {
 				return runCodeContext(ctx, host, inv, call.Arguments)
 			})
 			if err != nil {
@@ -99,7 +92,7 @@ func (module) ToolsForTurn(_ context.Context, host native.Host, inv *native.Agen
 			}
 			spec.ReadOnly, spec.Concurrent = true, true
 			spec.StreamRead = inv.Worktree.Project != nil
-			tool, err := native.BuildCustomTool(spec, instruction, func(ctx context.Context, call native.ToolRequest) native.ToolResult {
+			tool, err := native.BuildCustomTool(spec, "", func(ctx context.Context, call native.ToolRequest) native.ToolResult {
 				return runCodeImpact(ctx, host, inv, call.Arguments)
 			})
 			if err != nil {
@@ -113,7 +106,7 @@ func (module) ToolsForTurn(_ context.Context, host native.Host, inv *native.Agen
 			}
 			spec.ReadOnly, spec.Concurrent = true, true
 			spec.StreamRead = inv.Worktree.Project != nil
-			tool, err := native.BuildCustomTool(spec, instruction, func(ctx context.Context, call native.ToolRequest) native.ToolResult {
+			tool, err := native.BuildCustomTool(spec, "", func(ctx context.Context, call native.ToolRequest) native.ToolResult {
 				return runCodeMap(ctx, host, inv, call.Arguments)
 			})
 			if err != nil {
@@ -131,7 +124,7 @@ func (module) ToolsForTurn(_ context.Context, host native.Host, inv *native.Agen
 			}
 			spec.ReadOnly, spec.Concurrent = true, true
 			spec.StreamRead = inv.Worktree.Project != nil
-			tool, err := native.BuildCustomTool(spec, instruction, func(ctx context.Context, call native.ToolRequest) native.ToolResult {
+			tool, err := native.BuildCustomTool(spec, "", func(ctx context.Context, call native.ToolRequest) native.ToolResult {
 				return runCodePipeline(ctx, host, inv, hasIndex, call.Arguments)
 			})
 			if err != nil {

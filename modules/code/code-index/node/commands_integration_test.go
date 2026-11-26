@@ -570,6 +570,10 @@ func TestCodeIndexCommands(t *testing.T) {
 	})
 }
 
+func loadedToolStep(id, name string, arguments any) nodetest.Step {
+	return nodetest.Step{ID: id, Tool: "call_tool", Arguments: nodetest.Arguments(map[string]any{"name": name, "arguments": arguments})}
+}
+
 // TestCodeAgentTools runs one agent turn in a default profile and calls every
 // native code-index module tool.
 func TestCodeAgentTools(t *testing.T) {
@@ -581,14 +585,14 @@ func TestCodeAgentTools(t *testing.T) {
 	tools := []string{search, outline, codeContext, impact, ranked, pipeline}
 	steps := []nodetest.Step{
 		nodetest.Step{ID: "discover", Tool: "tool_search", Arguments: nodetest.Arguments(map[string]any{"query": "select:" + strings.Join(tools, ",")})},
-		nodetest.Step{ID: "search", Tool: search, Arguments: nodetest.Arguments(map[string]any{"query": "Serve"})},
-		nodetest.Step{ID: "outline", Tool: outline, Arguments: nodetest.Arguments(map[string]any{"path": "cmd/server.go"})},
+		loadedToolStep("search", search, map[string]any{"query": "Serve"}),
+		loadedToolStep("outline", outline, map[string]any{"path": "cmd/server.go"}),
 		nodetest.Step{ID: "context", Tool: codeContext, Arguments: nodetest.Arguments(map[string]any{"name": "helper"})},
-		nodetest.Step{ID: "impact", Tool: impact, Arguments: nodetest.Arguments(map[string]any{"name": "helper"})},
-		nodetest.Step{ID: "map", Tool: ranked, Arguments: nodetest.Arguments(map[string]any{})},
-		nodetest.Step{ID: "baseline_search", Tool: search, Arguments: nodetest.Arguments(map[string]any{"name": "helper", "limit": 8})},
+		loadedToolStep("impact", impact, map[string]any{"name": "helper"}),
+		loadedToolStep("map", ranked, map[string]any{}),
+		loadedToolStep("baseline_search", search, map[string]any{"name": "helper", "limit": 8}),
 		nodetest.Step{ID: "baseline_read", Tool: "read_file", Arguments: nodetest.Arguments(map[string]any{"path": "cmd/server.go", "offset": 16, "limit": 1})},
-		nodetest.Step{ID: "pipeline", Tool: pipeline, Arguments: nodetest.Arguments(json.RawMessage(`{"steps":[{"operation":"code.search","arguments":{"name":"helper"}},{"operation":"files.read_lines","arguments":{"limit":1},"from_previous":{"path":"/symbols/0/path","offset":"/symbols/0/range/start_line","expected_revision":"/symbols/0/file_revision"}}],"select":"/lines/0/text"}`))},
+		loadedToolStep("pipeline", pipeline, json.RawMessage(`{"steps":[{"operation":"code.search","arguments":{"name":"helper"}},{"operation":"files.read_lines","arguments":{"limit":1},"from_previous":{"path":"/symbols/0/path","offset":"/symbols/0/range/start_line","expected_revision":"/symbols/0/file_revision"}}],"select":"/lines/0/text"}`)),
 		nodetest.Step{ID: "answer"},
 	}
 	script := nodetest.NewScript(steps...)
@@ -608,11 +612,13 @@ func TestCodeAgentTools(t *testing.T) {
 	if len(requests) != len(steps) {
 		t.Fatalf("the turn made %d model requests, want %d", len(requests), len(steps))
 	}
-	t.Logf("discovery answered: %s", results["discover"].Result.Value)
+	_, offered := script.Observation("discover")
 	for _, tool := range tools {
-		// The model reads a package tool under its declared name.
-		if !slices.Contains(requests[1], nodetest.DeclaredToolName(tool)) {
-			t.Errorf("%s was not offered after discovery; offered %v", tool, requests[1])
+		if !slices.Contains(offered, tool) {
+			t.Errorf("%s was missing from declarations and discovered tools", tool)
+		}
+		if got, want := slices.Contains(requests[0], tool), tool == codeContext; got != want {
+			t.Errorf("initial request contains %s: got %t, want %t", tool, got, want)
 		}
 	}
 
@@ -728,7 +734,8 @@ func TestCodeContextAdmitsEditWithoutReread(t *testing.T) {
 	requireCodeIndex(t)
 	edit := nodetest.Arguments(map[string]string{"path": "sample.go", "old_text": "func Sample() {}", "new_text": "func Sample() { return }"})
 	script := nodetest.NewScript(
-		nodetest.Step{ID: "search", Tool: "code_search", Arguments: nodetest.Arguments(map[string]string{"name": "Sample"})},
+		nodetest.Step{ID: "discover", Tool: "tool_search", Arguments: nodetest.Arguments(map[string]string{"query": "select:code_search"})},
+		loadedToolStep("search", "code_search", map[string]string{"name": "Sample"}),
 		nodetest.Step{ID: "unread", Tool: "edit_file", Arguments: edit},
 		nodetest.Step{ID: "context", Tool: "code_context", Arguments: nodetest.Arguments(map[string]string{"name": "Sample"})},
 		nodetest.Step{ID: "edit", Tool: "edit_file", Arguments: edit},
