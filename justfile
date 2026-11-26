@@ -21,7 +21,7 @@ native:
 native-build:
     bash dev.sh native-build
 
-# Build the Code module with its pinned workspace and read-only manifests.
+# Build the Code module with the selected workspace and read-only manifests.
 build:
     bash dev.sh build ./...
 
@@ -29,7 +29,7 @@ build:
 test:
     bash dev.sh test ./...
 
-# Vet the Code module with its pinned workspace and read-only manifests.
+# Vet the Code module with the selected workspace and read-only manifests.
 vet:
     bash dev.sh vet ./...
 

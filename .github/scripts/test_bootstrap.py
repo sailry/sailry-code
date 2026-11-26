@@ -130,12 +130,17 @@ elif args[:2] == ["work", "init"]:
     assert not Path("go.work").exists()
     assert all((Path(path) / "go.mod").is_file() for path in args[2:])
     Path("go.work").write_text(json.dumps({"Use": [{"DiskPath": path} for path in args[2:]]}))
+elif args[:3] == ["list", "-m", "-f"]:
+    assert args[3] == '{{if eq .Path "github.com/sailry/sailry-harness"}}{{.Dir}}{{end}}'
+    assert len(args) == 4 and os.environ["GOWORK"] == str(code / "go.work")
+    print(os.environ["FIXTURE_LOCAL_HARNESS"])
 elif args == ["work", "edit", "-json"]:
     print(Path(os.environ["GOWORK"]).read_text())
 elif args and args[0] in {"build", "test", "vet", "run"}:
     assert os.environ["GOFLAGS"] == "-mod=readonly"
-    assert os.environ["GOWORK"] == str(code / ".runtime/go.work")
-    assert os.environ["SAILRY_HARNESS_DIR"] == str(code / ".runtime/harness")
+    local = os.environ.get("FIXTURE_LOCAL_HARNESS")
+    assert os.environ["GOWORK"] == str(code / ("go.work" if local else ".runtime/go.work"))
+    assert os.environ["SAILRY_HARNESS_DIR"] == (local or str(code / ".runtime/harness"))
 else:
     raise SystemExit("Unexpected Go command in closed fixture: " + repr(args))
 ''')
@@ -405,6 +410,26 @@ raise SystemExit(subprocess.run([os.environ["FIXTURE_GIT"], *options, *args], en
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse((self.code / ".runtime").exists())
                 self.assertEqual(self.go_log.read_text(), "")
+
+    def test_development_commands_use_the_local_harness_and_its_native_library(self):
+        local = self.base / "local Harness"
+        shutil.copytree(self.source / "native", local / "native")
+        workspace = self.code / "go.work"
+        workspace.write_text(f'go 1.27.3\nuse (\n.\n"{local}"\n)\n')
+        env = {"FIXTURE_OFFLINE": "1", "FIXTURE_LOCAL_HARNESS": str(local)}
+        for arguments in [("build", "./..."), ("test", "./..."), ("vet", "./..."), ("desktop",)]:
+            with self.subTest(arguments=arguments):
+                self.assert_success(self.bootstrap(*arguments, **env))
+                calls = [json.loads(line) for line in self.go_log.read_text().splitlines()]
+                self.assertEqual([call["args"][0] for call in calls], ["list", "run" if arguments == ("desktop",) else arguments[0]])
+                self.assertEqual(self.git_log.read_text(), "")
+        desktop = calls[-1]
+        self.assertEqual(desktop["args"], ["run", "./cmd/sailry-code-desktop"])
+        native = local / ".runtime/native/darwin-arm64"
+        self.assertEqual(desktop["turso"], str(native / "libturso_sync_sdk_kit.dylib"))
+        self.assertEqual(desktop["helpers"], str(native / "helpers"))
+        self.assertFalse((self.code / ".runtime/harness").exists())
+        self.assertEqual(self.native_log.read_text().splitlines(), [str(local)])
 
     def test_desktop_default_uses_the_code_product_entry_without_a_data_dir(self):
         self.assert_success(self.bootstrap("desktop", GOROOT="inherited-wrong-root"))
