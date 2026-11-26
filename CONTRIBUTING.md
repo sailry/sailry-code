@@ -80,7 +80,7 @@ reuse its Turso library. Keep `go.work` and `go.work.sum` local.
 
 | Path | Responsibility |
 | --- | --- |
-| `cmd/sailry-code-desktop` | Desktop entry point, `mygo.json` metadata (`0.1.0`, `ai.sailry.desktop`), macOS/Windows packaging wrappers |
+| `cmd/sailry-code-desktop` | Desktop entry point, `mygo.json` metadata (`0.3.0`, `ai.sailry.desktop`), macOS/Windows packaging wrappers |
 | `cmd/sailry-code-host` | Headless Host entry point and archive packaging wrapper |
 | `cmd/update-feed` | Ed25519 update feed signer for macOS and Windows Desktop archives |
 | `cmd/package-env.sh` | Shared packaging environment (`SAILRY_PRODUCT=code`, release repo, `ProductVersion` ldflags) |
@@ -184,6 +184,39 @@ Desktop/Host releases trigger automatically on `v*` tags via `.github/workflows/
 4. `install-host.sh` is verified (`task_repository=https://github.com/sailry/sailry-code`),
    checksums are generated, and assets are uploaded to a **draft** GitHub release
    without modifying existing differing assets or published releases.
+
+### One-time Harness handoff
+
+Only Code `0.3.0` bridges old packaged Harness clients. Release the Harness
+library first, pin that published revision in Code (Go and Flutter), then build
+Code's own `v0.3.0` release. Do not move tags or give Code CI write access to
+Harness.
+
+1. Use both **distribution** macOS artifacts from that exact Code tag (sealed,
+   notarized apps inside the `-unsigned.zip` wrappers, plus their matching DMGs).
+   On macOS, set `SAILRY_HARNESS_DIR` to the pinned checkout and supply the
+   historical Harness publisher seed through the release environment's
+   `SAILRY_UPDATE_SIGNING_KEY`, not the Code feed key. Run
+   `bash cmd/package-harness-handoff.sh <artifact-directory> <new-output-directory>`.
+   This prepares, but does not publish, the nine files expected by the legacy
+   updater. Never publish a partial output, a redirected URL or Code's catalog
+   as the old feed.
+2. For Android, verify the APK's application ID, signing certificate against
+   the previous distribution, version `0.3.0`, and strictly greater versionCode.
+   Publish the signed APK as `Sailry-android-arm64.apk` on Code's
+   `mobile-v0.3.0+<actual-build>` release; use the same bytes and filename on
+   Harness `v0.3.0`. The Actions artifact alone is not an update feed. iOS
+   continues to use its Apple channel.
+3. Before exposing the bridge, test a disposable stopped legacy profile on
+   each Mac architecture: packaged `0.2.13` must accept the Harness-signed
+   `0.3.0`, retain data, and accept a newer test release from Code's feed only.
+   Check Android over-install and the next Code update on a device. Windows
+   users install Code separately. Existing Hosts use Code's installer with
+   `--version 0.3.0` under the same account; verify pairing and data afterward.
+4. Once accepted, attach only the prepared compatibility files to the existing
+   Harness `v0.3.0` release, without overwriting files or changing Latest.
+   If historical signing credentials are unavailable, offer a manual install
+   instead. Subsequent product updates are published only to Code.
 
 ## Updating Harness
 
