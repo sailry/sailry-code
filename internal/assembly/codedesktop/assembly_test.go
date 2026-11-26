@@ -34,6 +34,11 @@ func TestAssemblySelectsCodeAndBasePages(t *testing.T) {
 	if !assembly.HasPanelResource(native.Terminal) || !slices.ContainsFunc(assembly.SettingsPages, func(page settings.NativePage) bool { return page.Section == settings.Terminal }) {
 		t.Fatal("Code terminal actions or settings are absent")
 	}
+	app := native.NewPreview(assembly)
+	app.OpenWorkspaceTerminal("project-shell", "Project shell")
+	if app.ActiveTerminal() != "project-shell" {
+		t.Fatal("Code did not open the terminal workspace pane")
+	}
 	if assembly.ProviderUI == nil {
 		t.Fatal("base provider contribution is absent")
 	}

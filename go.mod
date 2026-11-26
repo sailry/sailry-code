@@ -12,7 +12,7 @@ require (
 	github.com/jonboulle/clockwork v0.5.0
 	github.com/odvcencio/gotreesitter v0.57.0
 	github.com/pkg/sftp v1.13.12
-	github.com/sailry/sailry-harness v0.2.14-0.20261126111414-2986b3aea6c2
+	github.com/sailry/sailry-harness v0.2.14-0.20261126114205-708b8db77500
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
 	lukechampine.com/blake3 v1.4.1

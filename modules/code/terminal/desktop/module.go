@@ -3,6 +3,7 @@ package desktop
 import "github.com/sailry/sailry-harness/sdk/desktop/native"
 
 func Register(assembly *native.Assembly) {
+	assembly.RegisterWorkspacePane(native.TerminalWorkspacePane())
 	registerPanel(assembly)
 	assembly.PluginControlReplacements = append(assembly.PluginControlReplacements,
 		native.PluginControlReplacement{Package: "commands", Slot: "project", ID: "terminal-cli"},
