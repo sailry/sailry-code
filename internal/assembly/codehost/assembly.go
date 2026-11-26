@@ -19,7 +19,7 @@ func Assembly() node.Assembly {
 	assembly.SystemPrompt = systemPrompt
 	assembly.BundledDefaults = defaultPlugins()
 	assembly.Modules = append(assembly.Modules,
-		gitnode.Module(),
+		gitWithLegacyIndexCleanup{gitnode.Module()},
 		worktreesnode.Module(),
 		databasesnode.Module(),
 		sshnode.Module(),

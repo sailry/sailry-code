@@ -28,6 +28,9 @@ func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
 	if assembly.BundledDefaults == nil || len(assembly.BundledDefaults) != 0 {
 		t.Fatalf("Code must explicitly select no default plugins: %#v", assembly.BundledDefaults)
 	}
+	if !assembly.ReplacesPlugin("git") {
+		t.Fatal("Code assembly does not replace the legacy Git plugin")
+	}
 	if len(assembly.Modules) != len(base.Modules)+len(development) {
 		t.Fatalf("Code assembly has %d modules, want %d", len(assembly.Modules), len(base.Modules)+len(development))
 	}
