@@ -8,60 +8,58 @@ import (
 	"github.com/sailry/sailry-harness/sdk/native/protocol"
 )
 
-// gitHistoryMore reads the page after the ones the history lists.
+// A workspace refresh invalidates history. Only its visible panel requests it.
+func (p *repository) resetGitHistory() {
+	p.logCommits, p.logCursor, p.logDirty = nil, nil, false
+	p.Data.Repo.Commits = nil
+	p.view.log = GitHistoryState{}
+	p.view.historyCache = gitHistoryCache{}
+}
+
 func (p *repository) gitHistoryMore() {
-	if p.loading["git-log"] || len(p.gitLogPages) == 0 {
-		return
-	}
-	if cursor := p.gitLogPages[len(p.gitLogPages)-1].Next; cursor != nil {
-		p.readGitLog(cursor, false)
+	if p.logCursor != nil {
+		p.readGitLog(p.logCursor)
 	}
 }
-func (p *repository) readGitLog(cursor *protocol.GitLogCursor, reset bool) {
+
+func (p *repository) readGitLog(cursor *protocol.GitLogCursor) {
 	if p.loading["git-log"] {
 		return
 	}
+	if cursor == nil {
+		p.logDirty = false
+	}
 	delete(p.failedReads, "git-log")
-	p.projectGitHistory(true)
+	p.view.log.Loading = true
 	p.read("git-log", protocol.Command{Kind: "read_git_log", Data: protocol.CommandReadGitLogPayload{Worktree: p.host.Worktree, Limit: 100, Cursor: cursor}}, func(c *ui.Context, out protocol.Output) {
-		if page, ok := protocol.DataAs[protocol.GitLog](out.Data); ok {
-			if reset {
-				p.gitLogPages = nil
-			}
-			p.gitLogPages = append(p.gitLogPages, page)
+		p.view.log.Loading = false
+		if page, ok := protocol.DataAs[protocol.GitLog](out.Data); ok && p.status.Kind != protocol.RepositoryKindDirectory {
+			p.projectGitHistory(page, cursor == nil)
 		}
-		p.projectGitHistory(false)
-	}, func(*ui.Context, error) { p.projectGitHistory(false) })
+	}, func(*ui.Context, error) { p.view.log.Loading = false })
 }
 
-// projectGitHistory lists the pages read as one history, newest first: the
-// graph draws a line only between commits of one list, so a page of its own
-// would cut the lines that cross into it. A commit a later page repeats,
-// as when the repository gained one between the reads, is listed once.
-func (p *repository) projectGitHistory(loading bool) {
-	if !loading {
-		p.view.historyCache = gitHistoryCache{}
-	}
-	state := GitHistoryState{Loading: loading}
-	if len(p.gitLogPages) > 0 {
-		state.Next = p.gitLogPages[len(p.gitLogPages)-1].Next != nil
+// A page can repeat commits after the repository changes between reads.
+func (p *repository) projectGitHistory(page protocol.GitLog, reset bool) {
+	if reset {
 		p.Data.Repo.Commits = nil
-		listed := map[string]bool{}
-		for _, page := range p.gitLogPages {
-			state.Partial = state.Partial || page.ReferencesTruncated
-			for _, entry := range page.Entries {
-				state.Partial = state.Partial || entry.Truncated
-				if listed[entry.ID] {
-					continue
-				}
-				listed[entry.ID] = true
-				commit := native.WorkspaceCommit{ID: entry.ID, Message: entry.Message, Author: entry.Author, Refs: entry.References, Parents: entry.Parents}
-				if entry.Timestamp != 0 {
-					commit.Time = time.Unix(entry.Timestamp, 0)
-				}
-				p.Data.Repo.Commits = append(p.Data.Repo.Commits, commit)
-			}
-		}
+		p.logCommits = make(map[string]struct{}, len(page.Entries))
+		p.view.log.Partial = false
 	}
-	p.view.log = state
+	p.view.historyCache = gitHistoryCache{}
+	p.logCursor = page.Next
+	p.view.log.Next = page.Next != nil
+	p.view.log.Partial = p.view.log.Partial || page.ReferencesTruncated
+	for _, entry := range page.Entries {
+		p.view.log.Partial = p.view.log.Partial || entry.Truncated
+		if _, seen := p.logCommits[entry.ID]; seen {
+			continue
+		}
+		p.logCommits[entry.ID] = struct{}{}
+		commit := native.WorkspaceCommit{ID: entry.ID, Message: entry.Message, Author: entry.Author, Refs: entry.References, Parents: entry.Parents}
+		if entry.Timestamp != 0 {
+			commit.Time = time.Unix(entry.Timestamp, 0)
+		}
+		p.Data.Repo.Commits = append(p.Data.Repo.Commits, commit)
+	}
 }

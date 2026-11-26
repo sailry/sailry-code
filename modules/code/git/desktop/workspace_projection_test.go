@@ -61,10 +61,11 @@ func TestGitHistoryPaging(t *testing.T) {
 	cursor := &protocol.GitLogCursor{}
 	p := repositoryFor(t, data)
 	p.loading["git-log"] = true
-	p.gitLogPages = []protocol.GitLog{
-		{Next: cursor, Entries: []protocol.GitLogEntry{{ID: "head", Message: "latest", Timestamp: 1700000000, Parents: []string{"older"}}, {ID: "older", Message: "older"}}},
-		{Offset: 100, ReferencesTruncated: true, Entries: []protocol.GitLogEntry{{ID: "older", Message: "older"}, {ID: "root", Message: "first", Parents: []string{}}}}}
-	p.projectGitHistory(false)
+	p.projectGitHistory(protocol.GitLog{Next: cursor, Entries: []protocol.GitLogEntry{{ID: "head", Message: "latest", Timestamp: 1700000000, Parents: []string{"older"}}, {ID: "older", Message: "older"}}}, true)
+	if p.logCursor != cursor || !p.view.log.Next {
+		t.Fatal("first page lost its cursor")
+	}
+	p.projectGitHistory(protocol.GitLog{Offset: 100, ReferencesTruncated: true, Entries: []protocol.GitLogEntry{{ID: "older", Message: "older"}, {ID: "root", Message: "first", Parents: []string{}}}}, false)
 	// A commit both pages hold is listed once. A root's parents are known
 	// and none; an earlier Node's are not known.
 	commits := data.Repo.Commits
@@ -77,8 +78,8 @@ func TestGitHistoryPaging(t *testing.T) {
 	// The last page read has no cursor: there is nothing more to read, and
 	// a read under way is not started again.
 	p.gitHistoryMore()
-	if len(p.gitLogPages) != 2 {
-		t.Fatal("a read started while one was under way")
+	if p.logCursor != nil || p.view.log.Next || !p.view.log.Partial || len(p.logCommits) != 3 {
+		t.Fatal("last page lost its partial result or retained a cursor")
 	}
 }
 

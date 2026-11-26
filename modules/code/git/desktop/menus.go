@@ -361,7 +361,7 @@ func (g gitMenus) changes() []action {
 	}
 	return []action{
 		g.run("git_stage_all", len(g.pr.stagePaths(g.entries(), false)) > 0),
-		g.run("git_unstage_all", len(indexPaths(g.entries(), "unstage")) > 0),
+		g.run("git_unstage_all", len(unstagePaths(g.entries())) > 0),
 		g.confirm("git_discard_all", "git_discard_all_confirm", strings.Join(paths, "\n"), len(paths) > 0, "git_discard_all"),
 	}
 }
@@ -517,8 +517,8 @@ func (g gitMenus) files(entries []native.WorkspaceChange, directory bool, direct
 			g.pr.dispatch(c, native.GitAction{Kind: "git_stage", Paths: stage})
 		}, len(stage) > 0),
 		g.item("git_unstage", func(c *ui.Context) {
-			g.pr.dispatch(c, native.GitAction{Kind: "git_unstage", Paths: indexPaths(entries, "unstage")})
-		}, len(indexPaths(entries, "unstage")) > 0),
+			g.pr.dispatch(c, native.GitAction{Kind: "git_unstage", Paths: unstagePaths(entries)})
+		}, len(unstagePaths(entries)) > 0),
 		g.discard(entries, paths),
 		g.item("git_ignore", func(c *ui.Context) {
 			g.pr.dispatch(c, native.GitAction{Kind: "git_ignore", Paths: ignorePaths, Scope: func() string {

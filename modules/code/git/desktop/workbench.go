@@ -97,11 +97,12 @@ func (pr *repository) changesToolbar(c *ui.Context, open func(path string)) {
 	p := theme.Of(c)
 	entries := pr.Data.Changes
 	add, del := 0, 0
+	var staged, unstaged bool
 	for _, e := range entries {
+		staged = staged || e.Staged != ""
+		unstaged = unstaged || pr.canStage(e, false)
 		add, del = add+e.Added, del+e.Removed
 	}
-	unstaged := len(pr.stagePaths(entries, false)) > 0
-	staged := len(indexPaths(entries, "unstage")) > 0
 	key := "git_unstage"
 	if unstaged {
 		key = "git_stage"
@@ -131,12 +132,35 @@ func (pr *repository) changesToolbar(c *ui.Context, open func(path string)) {
 // folder, a group and Stage all leave each conflict to be resolved by itself.
 func (pr *repository) stagePaths(entries []native.WorkspaceChange, file bool) []string {
 	var out []string
-	for _, relative := range indexPaths(entries, "stage") {
-		if file || !pr.gitConflicted(relative) {
-			out = append(out, relative)
+	for _, e := range entries {
+		if pr.canStage(e, file) {
+			out = append(out, e.Path)
 		}
 	}
 	return out
+}
+
+func (pr *repository) canStage(e native.WorkspaceChange, file bool) bool {
+	return (e.Unstaged != "" || e.Untracked) && (file || !pr.gitConflicted(e.Path))
+}
+
+// A frame needs only the checkbox state. Materialize the action paths on input.
+func (pr *repository) stageState(row *changeRow) (checked, mixed, enabled bool) {
+	allStaged := true
+	var staged, stageable bool
+	row.visitChanges(func(e native.WorkspaceChange) bool {
+		staged = staged || e.Staged != ""
+		allStaged = allStaged && e.Staged != "" && e.Unstaged == "" && !e.Untracked
+		stageable = stageable || pr.canStage(e, row.entry != nil)
+		return !(staged && !allStaged && stageable)
+	})
+	scope := row.scope()
+	checked = scope == "staged" || scope == "all" && allStaged
+	mixed = scope == "all" && !checked && staged
+	if checked {
+		return checked, mixed, staged
+	}
+	return checked, mixed, stageable
 }
 
 // stats is a change's +N −M, each only when not 0.
@@ -231,13 +255,12 @@ func (pr *repository) changeList(c *ui.Context, own bool, open, reveal func(path
 				} else if row.FocusVisible() && v.current != r.id {
 					pick()
 				}
-				entries := r.descendants()
 				row.ContextMenu(func(m *ui.Menu) {
 					directory := ""
 					if parts := strings.SplitN(r.id, "/", 3); len(parts) == 3 && parts[0] == "dir" {
 						directory = parts[2]
 					}
-					fillNative(c, m, g.files(entries, r.entry == nil, directory, reveal))
+					fillNative(c, m, g.files(r.descendants(), r.entry == nil, directory, reveal))
 				})
 				if r.entry != nil {
 					kit.Tooltip(c, row, r.entry.Path)
@@ -268,7 +291,7 @@ func (pr *repository) changeList(c *ui.Context, own bool, open, reveal func(path
 						}
 						ui.Icon(c, arrow).FontSize(12).Shrink(0)
 					}
-					checked, mixed := checkState(entries, r.scope())
+					checked, mixed, enabled := pr.stageState(r)
 					state, label := ui.CheckOff, "git_stage"
 					switch {
 					case checked:
@@ -276,13 +299,16 @@ func (pr *repository) changeList(c *ui.Context, own bool, open, reveal func(path
 					case mixed:
 						state = ui.CheckMixed
 					}
-					kind := "git_stage"
-					paths := pr.stagePaths(entries, r.entry != nil)
-					if checked {
-						kind, paths = "git_unstage", indexPaths(entries, "unstage")
-					}
-					box := ui.CheckboxState(c.Key("check"), &state, "").Label(i18n.T(c, label)).Shrink(0).Disabled(!pr.gitWritable() || len(paths) == 0)
+					box := ui.CheckboxState(c.Key("check"), &state, "").Label(i18n.T(c, label)).Shrink(0).Disabled(!pr.gitWritable() || !enabled)
 					if box.Changed() {
+						entries := r.descendants()
+						kind := "git_stage"
+						var paths []string
+						if checked {
+							kind, paths = "git_unstage", unstagePaths(entries)
+						} else {
+							paths = pr.stagePaths(entries, r.entry != nil)
+						}
 						pr.dispatch(c, native.GitAction{Kind: kind, Paths: paths})
 					}
 				})

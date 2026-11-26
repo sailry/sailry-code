@@ -39,8 +39,10 @@ func (p *repository) inspectGit() {
 			p.host.PublishStatus(value, true)
 			p.projectStatus(value)
 			if value.Kind != protocol.RepositoryKindDirectory {
-				p.readGitHistory()
+				p.logDirty = true
+				p.readGitBranches()
 			} else {
+				p.resetGitHistory()
 				p.Data.Repo = native.WorkspaceRepository{}
 			}
 		}
@@ -50,14 +52,13 @@ func (p *repository) inspectGit() {
 		p.view.state = native.GitState{}
 	})
 }
-func (p *repository) readGitHistory() {
+func (p *repository) readGitBranches() {
 	p.read("git-branches", protocol.Command{Kind: "list_git_branches", Data: protocol.CommandListGitBranchesPayload{Worktree: p.host.Worktree}}, func(c *ui.Context, out protocol.Output) {
 		if value, ok := protocol.DataAs[protocol.GitBranches](out.Data); ok {
 			p.branches = value
 			p.projectBranches(c, value)
 		}
 	})
-	p.readGitLog(nil, true)
 }
 func (p *repository) projectStatus(value protocol.GitStatus) {
 	conflicts := map[string]bool{}

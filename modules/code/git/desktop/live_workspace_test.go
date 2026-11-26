@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -61,6 +62,12 @@ func TestGitLiveWorkspaceStagesAndReleases(t *testing.T) {
 	w := desktop.Open(t, node.Assembly{Modules: []node.Module{gitnode.Module()}}, native.Assemble(gitdesktop.Register))
 	const name = "Git test fixture"
 	project := w.CreateProject(name, root)
+	var logReads atomic.Int32
+	w.Controller.OnDispatch(func(kind string) {
+		if kind == "read_git_log" {
+			logReads.Add(1)
+		}
+	})
 	session := w.OpenProjectSession(project.ID)
 	find := func(role ui.Role, label string) (ui.AccessInfo, bool) {
 		for _, entry := range w.Tester.AccessAll() {
@@ -122,6 +129,16 @@ func TestGitLiveWorkspaceStagesAndReleases(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Await("staging the actual file", func() bool { return git("diff", "--cached", "--name-only") == fixturePath })
+	if count := logReads.Load(); count != 0 {
+		t.Fatalf("conversation and Changes requested Git history %d times", count)
+	}
+	if err := window.Click(desktop.Label("git_view_history")); err != nil {
+		t.Fatal(err)
+	}
+	w.Await("History did not load the fixture commit", func() bool {
+		_, shown := window.AccessByRole(ui.RoleOption, "fixture")
+		return logReads.Load() != 0 && shown
+	})
 	if err := window.Click(desktop.Label("settings")); err != nil {
 		t.Fatal(err)
 	}

@@ -29,6 +29,9 @@ import (
 func (pr *repository) history(c *ui.Context, own bool) {
 	p := theme.Of(c)
 	v := &pr.view
+	if pr.logDirty {
+		pr.readGitLog(nil)
+	}
 	repo := &pr.Data.Repo
 	if pr.live() && v.log.Loading && len(repo.Commits) == 0 {
 		ui.Column(c).Grow(1).Center().Children(func() { kit.Loader(c, 20) })
@@ -153,7 +156,12 @@ func (pr *repository) historyGraph(c *ui.Context) bool {
 		v.historyCache = gitHistoryCache{}
 		return false
 	}
-	fp := commitsFingerprint(repo.Commits)
+	// Live history invalidates the graph as each page arrives. Preview actions
+	// can edit commit messages and references in place.
+	var fp uint64
+	if pr.host.Read == nil {
+		fp = commitsFingerprint(repo.Commits)
+	}
 	hc := &v.historyCache
 	if !hc.lanesValid || hc.count != count || hc.fingerprint != fp {
 		hc.lanes, hc.lanesOK = graphLanes(repo.Commits)

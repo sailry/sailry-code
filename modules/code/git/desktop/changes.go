@@ -51,26 +51,14 @@ func belongs(e native.WorkspaceChange, group string) bool {
 	return true
 }
 
-// indexPaths are the paths of entries that op, stage or unstage, changes.
-func indexPaths(entries []native.WorkspaceChange, op string) []string {
+func unstagePaths(entries []native.WorkspaceChange) []string {
 	var out []string
 	for _, e := range entries {
-		if op == "stage" && (e.Unstaged != "" || e.Untracked) || op == "unstage" && e.Staged != "" {
+		if e.Staged != "" {
 			out = append(out, e.Path)
 		}
 	}
 	return out
-}
-
-// checkState is a row's stage box: checked when the scope is staged or,
-// in all, when every entry is staged only; mixed in all when some are
-// staged. Its click unstages a checked box, else stages.
-func checkState(entries []native.WorkspaceChange, scope string) (checked, mixed bool) {
-	checked = len(entries) > 0 && (scope == "staged" || scope == "all" && !slices.ContainsFunc(entries, func(e native.WorkspaceChange) bool {
-		return e.Staged == "" || e.Unstaged != "" || e.Untracked
-	}))
-	mixed = scope == "all" && !checked && slices.ContainsFunc(entries, func(e native.WorkspaceChange) bool { return e.Staged != "" })
-	return checked, mixed
 }
 
 // selectedID is the row of entry's diff, opened in scope.
@@ -221,19 +209,37 @@ func changeRows(changes []native.WorkspaceChange, nav changeNav) []*changeRow {
 	return out
 }
 
-// descendants are the changes under a row, itself for a change.
-func (r *changeRow) descendants() []native.WorkspaceChange {
+// visitChanges follows the tree's action order until visit returns false.
+func (r *changeRow) visitChanges(visit func(native.WorkspaceChange) bool) bool {
 	if r.entry != nil {
-		return []native.WorkspaceChange{*r.entry}
+		return visit(*r.entry)
 	}
+	if r.entries != nil {
+		for _, entry := range r.entries {
+			if !visit(entry) {
+				return false
+			}
+		}
+	} else {
+		for _, child := range r.children {
+			if !child.visitChanges(visit) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (r *changeRow) descendants() []native.WorkspaceChange {
 	if r.entries != nil {
 		return r.entries
 	}
-	var out []native.WorkspaceChange
-	for _, k := range r.children {
-		out = append(out, k.descendants()...)
-	}
-	return out
+	var entries []native.WorkspaceChange
+	r.visitChanges(func(e native.WorkspaceChange) bool {
+		entries = append(entries, e)
+		return true
+	})
+	return entries
 }
 
 // scope is the group a row is in: staged, unstaged or all.

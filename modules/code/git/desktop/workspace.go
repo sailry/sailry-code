@@ -32,7 +32,9 @@ type repository struct {
 
 	badge                *native.StatusBadge
 	branches             protocol.GitBranches
-	gitLogPages          []protocol.GitLog
+	logCursor            *protocol.GitLogCursor
+	logCommits           map[string]struct{}
+	logDirty             bool
 	diffs                map[string]bool
 	diffContents         map[string][]native.WorkspaceHunk
 	manualDiffs          map[string]workspaceGitDiff
@@ -149,10 +151,7 @@ func (p *repository) release() {
 	p.initialized, p.pending = false, false
 	clear(p.loading)
 	clear(p.failedReads)
-	p.gitLogPages = nil
-	p.Data.Repo.Commits = nil
-	p.view.log = GitHistoryState{}
-	p.view.historyCache = gitHistoryCache{}
+	p.resetGitHistory()
 	clear(p.view.expanded)
 	clear(p.view.diffOpen)
 	p.view.chord, p.view.second = false, false
