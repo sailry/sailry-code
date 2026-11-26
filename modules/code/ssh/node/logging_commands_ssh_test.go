@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/sailry/sailry-code/internal/testsupport/node"
-	sshnode "github.com/sailry/sailry-code/modules/code/ssh/node"
-	sshfixture "github.com/sailry/sailry-code/modules/code/ssh/testsupport"
-	native "github.com/sailry/sailry-harness/sdk/native/node"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,11 +15,28 @@ import (
 	"time"
 
 	"github.com/getsentry/sentry-go"
+	"github.com/sailry/sailry-code/internal/product"
+	"github.com/sailry/sailry-code/internal/testsupport/node"
+	sshnode "github.com/sailry/sailry-code/modules/code/ssh/node"
+	sshfixture "github.com/sailry/sailry-code/modules/code/ssh/testsupport"
 	"github.com/sailry/sailry-harness/sdk/native/link"
+	native "github.com/sailry/sailry-harness/sdk/native/node"
 	"github.com/sailry/sailry-harness/sdk/native/process"
 	"github.com/sailry/sailry-harness/sdk/sdktest"
 	protocol "github.com/sailry/sailry-harness/sdk/sdktest/protocol"
 )
+
+type hostFeedTransport struct{}
+
+func (hostFeedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Host == "api.github.com" {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/sailry/sailry-code/releases" {
+			return nil, errors.New("unexpected Host release request")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`[{"tag_name":"v0.3.0"}]`)), Request: r}, nil
+	}
+	return nil, http.ErrSkipAltProtocol
+}
 
 func TestSSHDispatchPrivacy(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
@@ -35,14 +50,21 @@ func TestSSHDispatchPrivacy(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(closeLog)
-	t.Cleanup(sdktest.SetHostArtifactRoot(t.TempDir()))
+	// Exercise Code's published installer against fixed release metadata, not local artifacts or GitHub.
+	previous := http.DefaultTransport
+	transport := previous.(*http.Transport).Clone()
+	transport.RegisterProtocol("https", hostFeedTransport{})
+	http.DefaultTransport = transport
+	t.Cleanup(transport.CloseIdleConnections)
+	t.Cleanup(func() { http.DefaultTransport = previous })
 	peer := sshfixture.NewPeer(t)
 	server := nodetest.NewSentry(t)
 	node, err := native.StartWithOptions(t.Context(), path, native.Options{
 		Assembly:    native.Assembly{Modules: []native.Module{sshnode.Module()}},
 		Environment: new(process.NewEnvironment(nil)), MCP: sdktest.MCPOptions(),
-		Network:   &sdktest.NetworkScope{Bind: "127.0.0.1:0"},
-		Telemetry: server.Options(),
+		Network:     &sdktest.NetworkScope{Bind: "127.0.0.1:0"},
+		Telemetry:   server.Options(),
+		HostRelease: product.Desktop().HostRelease,
 	})
 	if err != nil {
 		t.Fatal(err)
