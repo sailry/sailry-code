@@ -49,8 +49,10 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 			}
 		}
 		for _, name := range []string{"git_log", "git_show", "git_blame", "list_git_changes", "read_git_change"} {
-			if _, ok := assembly.LookupTool(name); ok {
-				t.Errorf("retired Git agent tool %q is still in the catalog", name)
+			for _, lookup := range []string{name, sdktest.Alias("git", name)} {
+				if _, ok := assembly.LookupTool(lookup); ok {
+					t.Errorf("retired Git agent tool %q is still in the catalog", lookup)
+				}
 			}
 		}
 		// Legacy alias lookup resolves bare names and former plugin_<hash>_* aliases.
@@ -267,9 +269,13 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 		if len(offered) == 0 || !slices.Contains(offered[0], "read_file") || !slices.Contains(offered[0], "apply_patch") {
 			t.Fatalf("core native coding tools not offered on step 1: %v", offered)
 		}
+		// Git inspection tools may be declared directly or loaded by tool_search.
+		if len(offered) < 2 {
+			t.Fatalf("model did not receive a step after tool discovery: %v", offered)
+		}
 		for _, name := range []string{"git_status", "git_diff"} {
-			if !slices.Contains(offered[0], name) {
-				t.Errorf("Git inspection tool %q was not offered: %v", name, offered[0])
+			if !slices.Contains(offered[1], name) {
+				t.Errorf("Git inspection tool %q was not callable after discovery: %v", name, offered[1])
 			}
 		}
 		var status struct {
