@@ -291,46 +291,70 @@ func remove(client *sftp.Client, path string) error {
 	return nil
 }
 
-func copyRemote(client *sftp.Client, source, destination string) error {
-	pending := [][2]string{{source, destination}}
-	// Once an entry is copied, a lost read leaves the rest unknown too.
-	read := sftpRead
+func copyRemote(client *sftp.Client, source, destination string) (result error) {
+	type step struct {
+		source, destination string
+		depth               int
+	}
+	pending := []step{{source: source, destination: destination}}
+	// After creating the destination directory, even a definite refusal
+	// leaves a partial copy. Preserve that distinction without a second walk.
+	createdDirectory := false
+	defer func() {
+		if result != nil && createdDirectory {
+			result = unknown("Remote directory copy incomplete; inspect the destination: " + result.Error())
+		}
+	}()
+	remaining := maxSFTPTreeEntries - 1
 	for len(pending) > 0 {
-		source, destination = pending[len(pending)-1][0], pending[len(pending)-1][1]
+		current := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
+		source, destination = current.source, current.destination
 		metadata, err := client.Lstat(source)
 		if err != nil {
-			return read(err)
+			return sftpRead(err)
 		}
 		switch {
 		case metadata.IsDir():
+			if current.depth >= maxSFTPTreeDepth {
+				return &protocol.Fault{Code: protocol.ErrorCodeInvalidRequest, Message: "remote directory nesting exceeds limit"}
+			}
 			if err = client.Mkdir(destination); err != nil {
 				return sftpChange(err)
 			}
-			read = sftpChange
+			createdDirectory = true
 			entries, err := client.ReadDir(source)
 			if err != nil {
-				return read(err)
+				return sftpRead(err)
 			}
 			for _, entry := range entries {
 				if !strings.ContainsAny(entry.Name(), "/\x00") {
-					pending = append(pending, [2]string{joinRemote(source, entry.Name()), joinRemote(destination, entry.Name())})
+					if remaining == 0 {
+						return invalid("Remote directory tree exceeds copy limit")
+					}
+					remaining--
+					pending = append(pending, step{
+						source:      joinRemote(source, entry.Name()),
+						destination: joinRemote(destination, entry.Name()),
+						depth:       current.depth + 1,
+					})
 				}
 			}
 		case metadata.Mode()&os.ModeSymlink != 0:
 			target, err := client.ReadLink(source)
 			if err != nil {
-				return read(err)
+				return sftpRead(err)
 			}
 			if err = client.Symlink(target, destination); err != nil {
 				return sftpChange(err)
 			}
-			read = sftpChange
 		case metadata.Mode().IsRegular():
-			if err = copyRemoteFile(client, source, destination, read); err != nil {
+			if metadata.Size() > TransferLimit {
+				return invalid("Remote file exceeds transfer limit")
+			}
+			if err = copyRemoteFile(client, source, destination); err != nil {
 				return err
 			}
-			read = sftpChange
 		default:
 			return invalid("Unsupported remote file type")
 		}
@@ -338,22 +362,29 @@ func copyRemote(client *sftp.Client, source, destination string) error {
 	return nil
 }
 
-func copyRemoteFile(client *sftp.Client, source, destination string, read func(error) error) error {
+func copyRemoteFile(client *sftp.Client, source, destination string) error {
 	input, err := client.Open(source)
 	if err != nil {
-		return read(err)
+		return sftpRead(err)
 	}
 	defer input.Close()
 	output, err := createExclusive(client, destination)
 	if err != nil {
 		return sftpChange(err)
 	}
-	if _, err = io.Copy(output, input); err != nil {
+	copied, err := io.Copy(output, io.LimitReader(input, TransferLimit+1))
+	if err != nil {
 		_ = output.Close()
 		return unknown("Remote copy interrupted; inspect the destination")
 	}
 	if err = output.Close(); err != nil {
 		return sftpChange(err)
+	}
+	if copied > TransferLimit {
+		if err := client.Remove(destination); err != nil {
+			return unknown("Oversized remote copy could not be removed; inspect the destination")
+		}
+		return invalid("Remote file exceeds transfer limit")
 	}
 	return nil
 }

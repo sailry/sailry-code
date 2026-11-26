@@ -325,6 +325,39 @@ func TestSftpIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("copy limit distinguishes an untouched target from a partial tree", func(t *testing.T) {
+		client := fixture.sftp(t)
+		source := filepath.Join(remote, "oversized-tree")
+		if err := os.Mkdir(source, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		file := filepath.Join(source, "large")
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Truncate(file, ssh.TransferLimit+1); err != nil {
+			t.Fatal(err)
+		}
+		destination := filepath.Join(remote, "partial-copy")
+		copyToDestination := func(from string) error {
+			return ssh.Modify(client, sftpPath(from), protocol.SshFileAction{
+				Kind: "copy", Data: &protocol.SshFileActionCopyPayload{Destination: sftpPath(destination)},
+			})
+		}
+		if err := copyToDestination(file); code(err) != protocol.ErrorCodeInvalidRequest {
+			t.Fatalf("oversized file = %v", err)
+		}
+		if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("oversized file created a destination: %v", err)
+		}
+		if err := copyToDestination(source); code(err) != protocol.ErrorCodeOutcomeUnknown {
+			t.Fatalf("partial directory copy = %v", err)
+		}
+		if st, err := os.Stat(destination); err != nil || !st.IsDir() {
+			t.Fatalf("partial directory missing: %v", err)
+		}
+	})
+
 	t.Run("staged upload and download", func(t *testing.T) {
 		client := fixture.sftp(t)
 		transfers := sshservice.Transfers{Transfers: files.NewTransfers(canonicalTemp(t))}

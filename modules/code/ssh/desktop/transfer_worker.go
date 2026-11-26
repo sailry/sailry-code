@@ -3,10 +3,12 @@ package desktop
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"math/bits"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -14,7 +16,11 @@ import (
 	"github.com/sailry/sailry-harness/sdk/native/protocol"
 )
 
-const sshUploadMaximum = 1 << 30
+const (
+	sshUploadMaximum       = 1 << 30
+	maxTransferTreeDepth   = 64
+	maxTransferTreeEntries = 100_000
+)
 
 type sshTransferEntry struct {
 	local, remote string
@@ -281,8 +287,11 @@ func sshUploadSourceFault(ctx context.Context, err error) *protocol.Fault {
 // sshTransferScan lists a chosen file or directory tree with every directory
 // before its content. Only ordinary files and directories are transferable.
 func sshTransferScan(ctx context.Context, source, remote string) ([]sshTransferEntry, *protocol.Fault) {
-	type item struct{ local, remote string }
-	pending := []item{{source, remote}}
+	type item struct {
+		local, remote string
+		depth         int
+	}
+	pending := []item{{source, remote, 0}}
 	var result []sshTransferEntry
 	for len(pending) > 0 {
 		current := pending[len(pending)-1]
@@ -297,15 +306,28 @@ func sshTransferScan(ctx context.Context, source, remote string) ([]sshTransferE
 		entry := sshTransferEntry{local: current.local, remote: current.remote, directory: info.IsDir()}
 		switch {
 		case info.IsDir():
-			children, err := os.ReadDir(current.local)
+			if current.depth >= maxTransferTreeDepth {
+				return nil, sshTransferKey("files_upload_source")
+			}
+			remaining := maxTransferTreeEntries - len(result) - len(pending) - 1
+			dir, err := os.Open(current.local)
 			if err != nil {
 				return nil, sshTransferKey("files_upload_source")
 			}
+			children, err := dir.Readdirnames(remaining + 1)
+			dir.Close()
+			if len(children) > remaining {
+				return nil, sshTransferKey("files_upload_source")
+			}
+			if err != nil && err != io.EOF {
+				return nil, sshTransferKey("files_upload_source")
+			}
+			slices.Sort(children)
 			for _, child := range children {
-				if !utf8.ValidString(child.Name()) {
+				if !utf8.ValidString(child) {
 					return nil, sshTransferKey("files_upload_name")
 				}
-				pending = append(pending, item{filepath.Join(current.local, child.Name()), sshTransferJoin(current.remote, child.Name())})
+				pending = append(pending, item{filepath.Join(current.local, child), sshTransferJoin(current.remote, child), current.depth + 1})
 			}
 		case info.Mode().IsRegular():
 			entry.size = uint64(info.Size())
@@ -328,10 +350,12 @@ func (access sshTransferAccess) downloadEntries(ctx context.Context, remote, loc
 	type item struct {
 		remote, local string
 		directory     bool
+		depth         int
 	}
 	profile := access.profile
-	pending := []item{{remote, local, directory}}
+	pending := []item{{remote, local, directory, 0}}
 	var files []item
+	remaining := maxTransferTreeEntries - 1
 	for len(pending) > 0 {
 		current := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
@@ -341,6 +365,9 @@ func (access sshTransferAccess) downloadEntries(ctx context.Context, remote, loc
 		if !current.directory {
 			files = append(files, current)
 			continue
+		}
+		if current.depth >= maxTransferTreeDepth {
+			return sshTransferKey("files_download_failed")
 		}
 		info, err := os.Lstat(current.local)
 		switch {
@@ -365,11 +392,15 @@ func (access sshTransferAccess) downloadEntries(ctx context.Context, remote, loc
 			if !ok {
 				return sshTransferKey("files_download_failed")
 			}
+			remaining -= len(list.Entries)
+			if remaining < 0 || remaining == 0 && list.Next != nil {
+				return sshTransferKey("files_download_failed")
+			}
 			for _, entry := range list.Entries {
 				if !sshTransferLocalName(entry.Name) {
 					return sshTransferKey("files_download_failed")
 				}
-				pending = append(pending, item{sshTransferJoin(current.remote, entry.Name), filepath.Join(current.local, entry.Name), entry.Kind == protocol.EntryKindDirectory})
+				pending = append(pending, item{sshTransferJoin(current.remote, entry.Name), filepath.Join(current.local, entry.Name), entry.Kind == protocol.EntryKindDirectory, current.depth + 1})
 			}
 			if after = list.Next; after == nil {
 				break
