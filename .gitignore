@@ -4,8 +4,9 @@
 *.prof
 *.log
 .DS_Store
-/go.work
-/go.work.sum
+go.work
+go.work.sum
+/benchmarks/
 /cmd/sailry-code-desktop/resources/*-*/
 .env
 .env.*
