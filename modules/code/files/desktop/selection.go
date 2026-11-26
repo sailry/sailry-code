@@ -86,7 +86,7 @@ func (s *selection) paths(visible []string) []string {
 // targets are the rows an action on path acts on: the selection when it
 // holds path, less the rows inside a folder also selected; else path.
 func (s *selection) targets(visible []string, path string) []string {
-	if path == "" {
+	if path == "" && !s.selected[""] {
 		return nil
 	}
 	paths := s.paths(visible)
@@ -95,6 +95,9 @@ func (s *selection) targets(visible []string, path string) []string {
 	}
 	var out []string
 	for _, p := range paths {
+		if p == "" {
+			continue
+		}
 		inside := false
 		for d := parentDir(p); d != "" && !inside; d = parentDir(d) {
 			inside = s.selected[d] && slices.Contains(paths, d)

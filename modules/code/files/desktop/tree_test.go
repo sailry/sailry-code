@@ -116,6 +116,18 @@ func TestFilesTreeSelectionAndKeys(t *testing.T) {
 	}
 }
 
+func TestLiveTreeSelectAllTargetsEntries(t *testing.T) {
+	visible := []string{"", "docs", "docs/readme.md", "main.go"}
+	sel := selection{selected: map[string]bool{}}
+	sel.pick(visible, "main.go", false, false)
+	sel.all(visible)
+	for _, current := range []string{"", sel.current} {
+		if got := sel.targets(visible, current); !slices.Equal(got, []string{"docs", "main.go"}) {
+			t.Fatalf("select all targets at %q = %q", current, got)
+		}
+	}
+}
+
 func TestFilesSampleActions(t *testing.T) {
 	data := exampleTree()
 	project := fixtures.NewProject("fixture", data, nil)
