@@ -56,7 +56,10 @@ just desktop native-smoke  # Isolated checkout profile .runtime/profiles/native-
 ```
 
 Run `just desktop native-smoke` twice and confirm the window and history open
-without loader errors. Use `just desktop <fixed-name>` for routine manual tests instead of touching `~/.sailry-code`.
+without loader errors. `just desktop` serves Go profiles on
+`http://127.0.0.1:6061/debug/pprof/` by default (override with
+`SAILRY_PPROF=<loopback-addr>` or disable with `SAILRY_PPROF=`). Use
+`just desktop <fixed-name>` for routine manual tests instead of touching `~/.sailry-code`.
 
 ### Option B: Co-development with a local Sailry Harness checkout
 

@@ -109,6 +109,7 @@ version = manifest.split("require " + module + " ", 1)[1].split()[0]
 with Path(os.environ["FIXTURE_GO_LOG"]).open("a") as log:
     log.write(json.dumps({"args": args, "cwd": os.getcwd(), "flags": os.environ.get("GOFLAGS"), "workspace": os.environ.get("GOWORK"),
                          "turso": os.environ.get("SAILRY_TURSO_LIB"), "helpers": os.environ.get("SAILRY_HELPERS_DIR"),
+                         "pprof": os.environ.get("SAILRY_PPROF"),
                          "goroot": os.environ.get("GOROOT"), "toolchain": os.environ.get("GOTOOLCHAIN"),
                          "cgo": os.environ.get("CGO_ENABLED")}) + "\\n")
 if args == ["mod", "edit", "-json"]:
@@ -172,6 +173,7 @@ raise SystemExit(subprocess.run([os.environ["FIXTURE_GIT"], *options, *args], en
             "FIXTURE_TARGET": "darwin-arm64", "FIXTURE_LIBRARY": "libturso_sync_sdk_kit.dylib",
             "SAILRY_TURSO_LIB": "", "SAILRY_HELPERS_DIR": "",
         }
+        self.environment.pop("SAILRY_PPROF", None)
 
     @staticmethod
     def tool(path, source):
@@ -440,10 +442,19 @@ raise SystemExit(subprocess.run([os.environ["FIXTURE_GIT"], *options, *args], en
         self.assertEqual(desktop["cwd"], str(self.code))
         self.assertEqual(desktop["turso"], str(native / "libturso_sync_sdk_kit.dylib"))
         self.assertEqual(desktop["helpers"], str(native / "helpers"))
+        self.assertEqual(desktop["pprof"], "127.0.0.1:6061")
         self.assertIsNone(desktop["goroot"])
         self.assertEqual(desktop["toolchain"], "go1.27.3")
         self.assertEqual(desktop["cgo"], "0")
         self.assertFalse((self.code / ".runtime/profiles").exists())
+
+    def test_desktop_pprof_defaults_and_allows_override_or_disable(self):
+        self.assert_success(self.bootstrap("desktop", "native-smoke", SAILRY_PPROF="127.0.0.1:6062"))
+        overridden = json.loads(self.go_log.read_text().splitlines()[-1])
+        self.assertEqual(overridden["pprof"], "127.0.0.1:6062")
+        self.assert_success(self.bootstrap("desktop", "native-smoke", SAILRY_PPROF=""))
+        disabled = json.loads(self.go_log.read_text().splitlines()[-1])
+        self.assertEqual(disabled["pprof"], "")
 
     def test_desktop_dev_and_named_profiles_are_independent_of_harness_profiles(self):
         for name, path in [("dev", self.code / ".sailry-code-dev"),

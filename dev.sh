@@ -151,6 +151,7 @@ case "$mode" in
       exit 0
     fi
     export SAILRY_HELPERS_DIR=${SAILRY_HELPERS_DIR:-$native/helpers}
+    export SAILRY_PPROF=${SAILRY_PPROF-127.0.0.1:6061}
     arguments=(run ./cmd/sailry-code-desktop)
     case "$name" in
       '') ;;
