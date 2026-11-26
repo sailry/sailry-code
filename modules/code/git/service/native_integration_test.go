@@ -644,6 +644,56 @@ func TestNativeGitIntegration(t *testing.T) {
 			t.Fatal("unstaging left the entry")
 		}
 	})
+	t.Run("managed_snapshot_replaces_link_with_executable", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("requires Unix symbolic links and executable permissions")
+		}
+		root, r, _ := fixture(t)
+		alias := filepath.Join(root, "alias")
+		if err := os.Symlink("file.txt", alias); err != nil {
+			t.Fatal(err)
+		}
+		working, err := r.Worktree()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := working.Add("alias"); err != nil {
+			t.Fatal(err)
+		}
+		head, err := working.Commit("Add alias", &gogit.CommitOptions{Author: &object.Signature{Name: "Fixture", Email: "fixture@example.test"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(alias); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(alias, []byte("replacement"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(root, "file.txt"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		index, err := indexRevision(root, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target, err := service(t).CreateManagedWorktree(ctx, root, root, protocol.NewWorktreeID(), protocol.CommandCreateManagedWorktreePayload{
+			Branch: "copy-modes", ExpectedHead: head.String(), ExpectedIndex: index, IncludeChanges: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, want := range map[string]string{"alias": "replacement", "file.txt": "one\ntwo\nthree\n"} {
+			path := filepath.Join(target, name)
+			info, err := os.Lstat(path)
+			if err != nil || !info.Mode().IsRegular() || info.Mode()&0111 == 0 {
+				t.Fatalf("%s mode = %v, err = %v", name, info, err)
+			}
+			if body, err := os.ReadFile(path); err != nil || string(body) != want {
+				t.Fatalf("%s = %q, %v", name, body, err)
+			}
+		}
+	})
 	t.Run("managed_snapshot_and_targeted_removal", func(t *testing.T) {
 		root, r, commit := fixture(t)
 		s := service(t)

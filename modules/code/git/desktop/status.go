@@ -54,7 +54,7 @@ func (p *repository) readGitHistory() {
 	p.read("git-branches", protocol.Command{Kind: "list_git_branches", Data: protocol.CommandListGitBranchesPayload{Worktree: p.host.Worktree}}, func(c *ui.Context, out protocol.Output) {
 		if value, ok := protocol.DataAs[protocol.GitBranches](out.Data); ok {
 			p.branches = value
-			p.projectBranches(value)
+			p.projectBranches(c, value)
 		}
 	})
 	p.readGitLog(nil, true)
@@ -117,7 +117,7 @@ func workspaceChange(kind *protocol.GitChangeKind) string {
 	}
 	return "M"
 }
-func (p *repository) projectBranches(value protocol.GitBranches) {
+func (p *repository) projectBranches(c *ui.Context, value protocol.GitBranches) {
 	p.view.state.HeadMessage = workspaceString(value.Sync.HeadMessage)
 	repo := &p.Data.Repo
 	repo.Branches = nil
@@ -161,4 +161,7 @@ func (p *repository) projectBranches(value protocol.GitBranches) {
 	}
 	p.view.stashIDs, p.view.tagIDs = stashes, tags
 	p.view.operation = value.Sync.Operation != nil
+	if pk := &p.view.picker; pk.open && pk.key == "git_manage_branches" {
+		pk.items = p.menus(c).management()
+	}
 }

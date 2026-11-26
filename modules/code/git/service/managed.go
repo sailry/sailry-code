@@ -119,17 +119,17 @@ func (s *Service) CreateManagedWorktree(ctx context.Context, source, main string
 				return "", unknown()
 			}
 		}
+		name := filepath.FromSlash(change.path)
+		// Replace the checked-out entry itself, including a symlink or a file
+		// whose executable bit differs from the captured worktree.
+		if err := anchor.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", unknown()
+		}
 		if !change.working.exists {
-			if err := anchor.Remove(filepath.FromSlash(change.path)); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return "", unknown()
-			}
 			continue
 		}
 		if change.working.mode == 0120000 {
-			if err := anchor.Remove(filepath.FromSlash(change.path)); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return "", unknown()
-			}
-			if err := anchor.Symlink(string(change.working.data), filepath.FromSlash(change.path)); err != nil {
+			if err := anchor.Symlink(string(change.working.data), name); err != nil {
 				return "", unknown()
 			}
 			continue
@@ -138,7 +138,7 @@ func (s *Service) CreateManagedWorktree(ctx context.Context, source, main string
 		if change.working.mode == 0100755 {
 			mode = 0755
 		}
-		file, err := anchor.OpenFile(filepath.FromSlash(change.path), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+		file, err := anchor.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 		if err != nil {
 			return "", unknown()
 		}

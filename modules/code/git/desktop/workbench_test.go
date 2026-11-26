@@ -17,7 +17,24 @@ import (
 	"github.com/sailry/sailry-harness/sdk/desktop/native"
 	fixtures "github.com/sailry/sailry-harness/sdk/desktop/testing"
 	"github.com/sailry/sailry-harness/sdk/desktop/theme"
+	"github.com/sailry/sailry-harness/sdk/native/protocol"
 )
+
+func TestOpenManageBranchesReceivesBranchList(t *testing.T) {
+	pr := viewOf(fixtures.PreviewProject(false))
+	pr.Data.Repo.Branches = nil
+	window := ui.NewTester(func(c *ui.Context) {
+		menus := pr.menus(c)
+		menus.choose("git_manage_branches", menus.management(), "git_manage_branches").run(c)
+		pr.view.picker.query = "topic"
+		pr.projectBranches(c, protocol.GitBranches{Entries: []protocol.GitBranch{{Name: "topic"}}})
+	}, 400, 300)
+	window.Frame()
+	picker := pr.view.picker
+	if !picker.open || picker.query != "topic" || !slices.ContainsFunc(picker.items, func(a action) bool { return a.label == "topic" }) {
+		t.Fatal("the open branch picker lost its query or omitted the newly loaded branch")
+	}
+}
 
 // pageTester hosts the shared workspace controls in two test columns.
 func pageTester(t *testing.T, k native.PanelKind) (*repository, *ui.Tester) {

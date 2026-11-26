@@ -37,6 +37,7 @@ var separatorItem = action{sep: true}
 // picker is a searchable list of choices (Sailry's Picker), as Checkout
 // lists the branches.
 type picker struct {
+	key   string
 	open  bool
 	title string
 	query string
@@ -104,7 +105,7 @@ func (g gitMenus) choose(key string, items []action, label string) action {
 	if key == "git_checkout" {
 		title = "git_search_branches"
 	}
-	a := g.item(key, func(*ui.Context) { g.v.picker = picker{open: true, title: g.t(title), items: items} }, len(items) > 0)
+	a := g.item(key, func(*ui.Context) { g.v.picker = picker{open: true, key: key, title: g.t(title), items: items} }, len(items) > 0)
 	a.label = g.t(label)
 	return a
 }
