@@ -50,7 +50,6 @@ class _FilesPageState extends State<FilesPage> {
       _directory = _identity == null ? widget.initialDirectory : '';
       _identity = identity;
       _listing = null;
-      _opening = null;
       _generation++;
       if (target != null) _load();
     }
@@ -118,7 +117,15 @@ class _FilesPageState extends State<FilesPage> {
     } catch (error) {
       if (mounted && identity == _identity) showFailure(context, error);
     } finally {
-      if (mounted && identity == _identity) setState(() => _opening = null);
+      // Linked file pages have all closed. Only drafts and unresolved writes or
+      // trash requests need to survive reopening this host/worktree/path.
+      _documents.removeWhere(
+        (_, doc) =>
+            doc.draft?.dirty != true &&
+            doc.draft?.pending == null &&
+            doc.trashRequest == null,
+      );
+      if (mounted) setState(() => _opening = null);
     }
   }
 

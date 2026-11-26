@@ -151,23 +151,34 @@ func (t *fileTree) ensurePage(name string) *directoryPage {
 	}
 	state := &directoryPage{}
 	t.pages[name] = state
-	t.request(name, state, nil, nil, 0, false)
+	t.request(name, state, nil, directoryRead{})
 	return state
 }
 
 func (t *fileTree) refresh(name string) {
 	if state := t.pages[name]; state != nil && state.read == nil {
-		t.request(name, state, nil, nil, len(state.entries), false)
+		var through *treeEntry
+		if n := len(state.entries); n > 0 {
+			through = &state.entries[n-1]
+		}
+		t.request(name, state, nil, directoryRead{through: through})
 	}
 }
 
 func (t *fileTree) more(name string) {
 	if state := t.pages[name]; state != nil && state.next != nil && state.read == nil {
-		t.request(name, state, state.next, append([]treeEntry(nil), state.entries...), 0, state.partial)
+		t.request(name, state, state.next, directoryRead{entries: append([]treeEntry(nil), state.entries...), partial: state.partial})
 	}
 }
 
-func (t *fileTree) request(name string, state *directoryPage, after *protocol.DirectoryCursor, entries []treeEntry, extent int, partial bool) {
+type directoryRead struct {
+	entries []treeEntry
+	seen    map[string]bool
+	through *treeEntry
+	partial bool
+}
+
+func (t *fileTree) request(name string, state *directoryPage, after *protocol.DirectoryCursor, read directoryRead) {
 	ctx, cancel := context.WithCancel(t.ctx)
 	state.read, state.failed = cancel, false
 	t.host.Read(ctx, name, after, func(c *ui.Context, page protocol.Directory, err error) {
@@ -206,32 +217,37 @@ func (t *fileTree) request(name string, state *directoryPage, after *protocol.Di
 			t.report(c, code, err)
 			return
 		}
-		previous := len(entries)
-		seen := make(map[string]bool, previous+len(page.Entries))
-		for _, entry := range entries {
-			seen[entry.name] = entry.directory
+		previous := len(read.entries)
+		if read.seen == nil {
+			read.seen = make(map[string]bool, previous+len(page.Entries))
+			for _, entry := range read.entries {
+				read.seen[entry.name] = entry.directory
+			}
 		}
 		for _, raw := range page.Entries {
-			if _, duplicate := seen[raw.Name]; duplicate || raw.Name == "" || raw.Name == "." || raw.Name == ".." || strings.ContainsAny(raw.Name, "/\\\x00") {
+			if _, duplicate := read.seen[raw.Name]; duplicate || raw.Name == "" || raw.Name == "." || raw.Name == ".." || strings.ContainsAny(raw.Name, "/\\\x00") {
 				continue
 			}
 			dir := raw.Kind == protocol.EntryKindDirectory
-			entries = append(entries, treeEntry{path.Join(name, raw.Name), raw.Name, dir})
-			seen[raw.Name] = dir
+			read.entries = append(read.entries, treeEntry{path.Join(name, raw.Name), raw.Name, dir})
+			read.seen[raw.Name] = dir
 		}
-		partial = partial || page.UnsupportedNames > 0 || page.Truncated && page.Next == nil
-		if page.Next != nil && len(entries) > previous && len(entries) < extent {
-			t.request(name, state, page.Next, entries, extent, partial)
+		read.partial = read.partial || page.UnsupportedNames > 0 || page.Truncated && page.Next == nil
+		// Refresh through the last previously loaded key. Insertions before that
+		// key may move selected or expanded entries onto a later page.
+		if through, next := read.through, page.Next; through != nil && next != nil && len(read.entries) > previous &&
+			(next.Directory && !through.directory || next.Directory == through.directory && next.Name < through.name) {
+			t.request(name, state, next, read)
 			return
 		}
 		for _, old := range state.entries {
-			if dir, found := seen[old.name]; !found || dir != old.directory {
+			if dir, found := read.seen[old.name]; !found || dir != old.directory {
 				t.removePages(old.path)
 				t.forget(old.path)
 			}
 		}
-		state.entries, state.next = entries, page.Next
-		state.partial, state.loaded, state.denied = partial, true, false
+		state.entries, state.next = read.entries, page.Next
+		state.partial, state.loaded, state.denied = read.partial, true, false
 		t.reported = ""
 		t.dirty = true
 	})
