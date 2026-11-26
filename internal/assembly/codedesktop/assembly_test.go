@@ -8,6 +8,7 @@ import (
 	databases "github.com/sailry/sailry-code/modules/code/databases/desktop"
 	ssh "github.com/sailry/sailry-code/modules/code/ssh/desktop"
 	"github.com/sailry/sailry-harness/sdk/desktop"
+	"github.com/sailry/sailry-harness/sdk/desktop/harness"
 	"github.com/sailry/sailry-harness/sdk/desktop/i18n"
 	"github.com/sailry/sailry-harness/sdk/desktop/native"
 	"github.com/sailry/sailry-harness/sdk/desktop/settings"
@@ -19,8 +20,16 @@ func TestAssemblySelectsCodeAndBasePages(t *testing.T) {
 	for _, page := range assembly.WorkspacePages {
 		pages = append(pages, page.Page)
 	}
-	if !slices.Equal(pages, []native.Page{databases.PageID, ssh.PageID, native.FilesPage, native.GitPage, "page:settings_plugins"}) {
-		t.Fatalf("workspace page order = %v", pages)
+	base := harness.Assembly()
+	want := []native.Page{databases.PageID, ssh.PageID, native.FilesPage, native.GitPage}
+	for _, page := range base.WorkspacePages {
+		want = append(want, page.Page)
+	}
+	if !slices.Equal(pages, want) {
+		t.Fatalf("workspace page order = %v, want %v", pages, want)
+	}
+	if len(assembly.MetricContributions) != len(base.MetricContributions) {
+		t.Fatal("Code is missing Harness composer and provider metrics")
 	}
 	if !assembly.HasPanelResource(native.Terminal) || !slices.ContainsFunc(assembly.SettingsPages, func(page settings.NativePage) bool { return page.Section == settings.Terminal }) {
 		t.Fatal("Code terminal actions or settings are absent")

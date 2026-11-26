@@ -8,6 +8,7 @@ import (
 	git "github.com/sailry/sailry-code/modules/code/git/desktop"
 	terminal "github.com/sailry/sailry-code/modules/code/terminal/desktop"
 	worktrees "github.com/sailry/sailry-code/modules/code/worktrees/desktop"
+	"github.com/sailry/sailry-harness/sdk/desktop/harness"
 	"github.com/sailry/sailry-harness/sdk/desktop/native"
 )
 
@@ -38,7 +39,7 @@ func TestCodeLegacyPluginControlRegistrations(t *testing.T) {
 		{"terminal", native.Assemble(terminal.Register), terminalControls},
 		{"worktrees", native.Assemble(worktrees.Register), worktreeControls},
 		{"combined", native.Assemble(terminal.Register, worktrees.Register), slices.Concat(terminalControls, worktreeControls)},
-		{"product", codedesktop.Assembly(), slices.Concat(gitControls, worktreeControls, terminalControls)},
+		{"product", codedesktop.Assembly(), slices.Concat(gitControls, worktreeControls, terminalControls, harness.Assembly().PluginControlReplacements)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			if got := row.assembly.PluginControlReplacements; !slices.Equal(got, row.want) {
