@@ -628,43 +628,52 @@ func runCodeContext(ctx context.Context, host native.Host, inv *native.AgentInvo
 		}
 	}
 
-	// Revision-checked source reads directly in Go.
+	// Merged ranges are grouped by path and revision and ordered by line.
+	var linePage protocol.FileLines
+	fileEnd := 0
 	for idx, r := range merged {
 		if jsonSize(data)+128 >= budget {
-			if idx < len(merged) {
-				data["partial"], data["truncated"] = true, true
-			}
+			data["partial"], data["truncated"] = true, true
 			break
 		}
-		readOut, rErr := runOp(ctx, host, inv, protocol.ToolOperationReadFileLines, map[string]any{
-			"path": r.path, "offset": r.start, "limit": r.limit, "expected_revision": r.revision,
-		})
-		if rErr != nil {
-			data["partial"] = true
-			continue
+		end := uint64(r.start + r.limit)
+		if idx == fileEnd || linePage.NextOffset != nil && *linePage.NextOffset < end {
+			fileEnd = idx + 1
+			for fileEnd < len(merged) && merged[fileEnd].path == r.path && merged[fileEnd].revision == r.revision {
+				fileEnd++
+			}
+			// A byte-limited earlier page may leave part of this snippet unread.
+			// Start at the snippet itself to retain its independent page budget.
+			var err error
+			linePage, err = readSnippetRanges(ctx, host, inv, merged[idx:fileEnd])
+			if err != nil {
+				data["partial"] = true
+				continue
+			}
 		}
-		linesPage, ok := readOut.Data.(protocol.FileLines)
-		if !ok {
-			data["partial"] = true
-			continue
+		count := 0
+		for count < len(linePage.Lines) && linePage.Lines[count].Number <= end {
+			count++
 		}
-		incomplete := linesPage.NextOffset != nil && *linesPage.NextOffset < uint64(r.start+r.limit)
+		lines := linePage.Lines[:count]
+		linePage.Lines = linePage.Lines[count:]
+		incomplete := linePage.NextOffset != nil && *linePage.NextOffset < end
 		if incomplete {
 			data["partial"], data["truncated"] = true, true
 		}
-		if len(linesPage.Lines) == 0 {
+		if len(lines) == 0 {
 			data["partial"] = true
 			continue
 		}
 		var sb strings.Builder
-		for _, line := range linesPage.Lines {
+		for _, line := range lines {
 			sb.WriteString(line.Text)
 		}
 		snippet := map[string]any{
 			"path":          r.path,
 			"file_revision": r.revision,
-			"start_line":    linesPage.Lines[0].Number,
-			"end_line":      linesPage.Lines[len(linesPage.Lines)-1].Number,
+			"start_line":    lines[0].Number,
+			"end_line":      lines[len(lines)-1].Number,
 			"text":          sb.String(),
 			"truncated":     r.truncated || incomplete,
 		}
@@ -694,11 +703,37 @@ func runCodeContext(ctx context.Context, host native.Host, inv *native.AgentInvo
 				if !strings.HasSuffix(trimmed, "\n") {
 					lineCount++
 				}
-				snippet["end_line"] = linesPage.Lines[0].Number + uint64(max(0, lineCount-1))
+				snippet["end_line"] = lines[0].Number + uint64(max(0, lineCount-1))
 			}
 		}
 	}
-	return native.ToolResult{Value: data}
+	revisions := make(map[string]string, len(snippets))
+	for _, snippet := range snippets {
+		revisions[snippet["path"].(string)] = snippet["file_revision"].(string)
+	}
+	return native.ToolResult{Value: data, Meta: native.FileReadMetadata(inv.Run.Worktree, revisions)}
+}
+
+func readSnippetRanges(ctx context.Context, host native.Host, inv *native.AgentInvocation, ranges []snippetRange) (protocol.FileLines, error) {
+	first := ranges[0]
+	selected := make([]protocol.FileLineRange, 0, len(ranges))
+	limit := 0
+	for _, r := range ranges {
+		selected = append(selected, protocol.FileLineRange{Start: uint64(r.start), End: uint64(r.start + r.limit)})
+		limit += r.limit
+	}
+	out, err := runOp(ctx, host, inv, protocol.ToolOperationReadFileLines, map[string]any{
+		"path": first.path, "expected_revision": first.revision,
+		"offset": first.start, "limit": limit, "ranges": selected,
+	})
+	if err != nil {
+		return protocol.FileLines{}, err
+	}
+	page, ok := out.Data.(protocol.FileLines)
+	if !ok {
+		return protocol.FileLines{}, errors.New("Invalid file lines result")
+	}
+	return page, nil
 }
 
 func parseGraphPaths(v any) ([]string, error) {
