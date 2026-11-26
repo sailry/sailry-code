@@ -33,7 +33,7 @@ func TestNativeHostAssemblyLifecycleAndOmission(t *testing.T) {
 			ids = append(ids, m.ID())
 			totalTools += len(m.Catalog())
 		}
-		for _, want := range []string{"files", "ocr", "git", "worktrees", "code-index", "web-search", "databases", "ssh", "memory", "browser", "external-browser", "computer"} {
+		for _, want := range []string{"files", "ocr", "git", "worktrees", "web-search", "databases", "ssh", "memory", "browser", "external-browser", "computer"} {
 			if !slices.Contains(ids, want) {
 				t.Errorf("official host assembly missing module %q (got %v)", want, ids)
 			}

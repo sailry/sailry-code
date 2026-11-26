@@ -42,8 +42,8 @@ func TestAssemblySelectsCodeAndBasePages(t *testing.T) {
 	if assembly.ProviderUI == nil {
 		t.Fatal("base provider contribution is absent")
 	}
-	if len(assembly.ExecutionSettings) != 1 {
-		t.Fatal("Code index settings are absent")
+	if len(assembly.ExecutionSettings) != len(base.ExecutionSettings) {
+		t.Fatal("Code added execution settings beyond those supplied by Harness")
 	}
 	if got := len(assembly.ProjectWorkflows); got != 2 {
 		t.Fatalf("project workflows = %d, want Git and Worktrees", got)

@@ -10,7 +10,6 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/jonboulle/clockwork v0.5.0
-	github.com/odvcencio/gotreesitter v0.57.0
 	github.com/pkg/sftp v1.13.12
 	github.com/sailry/sailry-harness v0.2.14-0.20261126120225-a8a9d705d38d
 	golang.org/x/crypto v0.59.0

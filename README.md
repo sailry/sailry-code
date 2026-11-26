@@ -33,7 +33,6 @@
 ## Features
 
 - **AI modes and agent teams** — Switch between **Standard**, **Plan** (read-only planning before changes), and **Collaborate** (parallel subagents with per-role model choices), with every step and approval visible in chat.
-- **Code navigation and graph** — Fast symbol search, file outlines, caller/callee context, and change impact analysis, with optional persistent indexing per worktree.
 - **Files workbench** — Sidebar file tree, full search, multi-tab editor (`Cmd+P`), file transfers, and system Trash support; clicking file links inside chat opens them directly.
 - **Git and isolated worktrees** — Inspect diffs, stage hunks, commit, switch branches, clone repositories, review per-turn checkpoints, and isolate parallel agent tasks in managed Git worktrees (`Ctrl+Shift+G`).
 - **Built-in terminals and Python** — Integrated workspace and conversation-panel terminals (`Ctrl+\``), per-host shell and environment preferences, and a ready-to-use bundled Python runtime.

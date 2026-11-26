@@ -14,6 +14,7 @@ For adding models and organizing sessions, see the [Models guide](https://sailry
 
 - Open **Files** in the sidebar or toggle the **Files** side panel inside a conversation (`Cmd+P`) to browse the directory tree, search files, edit in multi-tab views, upload or download files, and move items to Trash.
 - **File links**: Clicking any file or folder link in a conversation opens it directly in the Files view.
+- **Agent file discovery**: Agents use `find_files` to locate paths, `search_files` to find symbols or text, and `read_file` to read matching files.
 - **Worktree isolation**: All agent file reads, edits, and patches stay confined to the active project or worktree scope.
 
 ## Git workbench & checkpoints (`Ctrl+Shift+G`)
@@ -33,11 +34,3 @@ For adding models and organizing sessions, see the [Models guide](https://sailry
 - Main-workspace terminal tabs stay alive in the background when you close the tab view, while closing a conversation-panel terminal tab stops that shell session.
 - Configure per-host default shell and environment variables in **Settings → Terminal** (security-sensitive runtime variables and shell startup hooks are rejected automatically).
 - **Bundled Python**: Sailry Code includes a built-in Python 3.12 runtime and a ready-to-use `python` skill so agents can set up isolated per-session virtual environments for scripts and analysis without relying on your system Python install.
-
-## Code Graph
-
-Sailry Code parses your repository structure natively so agents can jump directly to definitions and callers instead of brute-force grepping large codebases:
-
-- **Agent capabilities**: Symbol search, file outlines, caller/callee and reference context, change impact analysis, ranked repository maps, and multi-step combined code queries.
-- **Settings**: Configure **Code index** and **Persistent index** under **Settings → Conversation**.
-- **Scale & performance**: On-demand live scans support repositories up to 50,000 files; when persistent indexing is enabled, parsed symbols and references are stored per worktree and idle watches are released automatically after 2 minutes.

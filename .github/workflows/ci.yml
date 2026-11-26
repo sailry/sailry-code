@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       integration:
-        description: Run the repository, SSH, database server and code-index integration suites
+        description: Run the repository, SSH, and database server integration suites
         type: boolean
         default: false
   workflow_call:
@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       integration:
-        description: Run the repository, SSH, database server and code-index integration suites
+        description: Run the repository, SSH, and database server integration suites
         type: boolean
         default: false
     secrets:
@@ -133,7 +133,7 @@ jobs:
           unset GOROOT
           export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=1
           go test -race -p 2 -parallel 4 \
-            ./modules/code/code-index/node ./modules/code/ssh/service ./modules/code/databases/service \
+            ./modules/code/ssh/service ./modules/code/databases/service \
             ./modules/code/git/service ./modules/code/terminal/node ./modules/code/worktrees/node
 
   integration:
@@ -194,7 +194,7 @@ jobs:
           set -euo pipefail
           sha256sum --check SHA256SUMS
           test -f "$SAILRY_TURSO_LIB"
-      - name: SSH, database and code-index integration tests
+      - name: SSH and database integration tests
         env:
           SAILRY_TEST_POSTGRES_PORT: ${{ job.services.postgres.ports['5432'] }}
           SAILRY_TEST_MYSQL_PORT: ${{ job.services.mysql.ports['3306'] }}
@@ -203,7 +203,7 @@ jobs:
           unset GOROOT
           export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=0
           go test -p 1 -timeout 20m -tags integration \
-            ./modules/code/ssh/service ./modules/code/databases/service ./modules/code/code-index/node ./internal/assembly/codehost
+            ./modules/code/ssh/service ./modules/code/databases/service
 
   repository-integration:
     needs: [native-linux, native]
@@ -331,8 +331,7 @@ jobs:
           unset GOROOT
           export GOTOOLCHAIN=go1.27.3 CGO_ENABLED=0
           go test -p 1 -timeout 20m \
-            ./modules/code/code-index/node ./modules/code/git/service \
-            ./modules/code/databases/service ./modules/code/terminal/node
+            ./modules/code/git/service ./modules/code/databases/service ./modules/code/terminal/node
 
   macos:
     needs: [scope, checks, native]

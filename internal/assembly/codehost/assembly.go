@@ -3,7 +3,6 @@ package codehost
 import (
 	_ "embed"
 
-	codeindex "github.com/sailry/sailry-code/modules/code/code-index/node"
 	databasesnode "github.com/sailry/sailry-code/modules/code/databases/node"
 	gitnode "github.com/sailry/sailry-code/modules/code/git/node"
 	sshnode "github.com/sailry/sailry-code/modules/code/ssh/node"
@@ -22,7 +21,6 @@ func Assembly() node.Assembly {
 	assembly.Modules = append(assembly.Modules,
 		gitnode.Module(),
 		worktreesnode.Module(),
-		codeindex.Module(),
 		databasesnode.Module(),
 		sshnode.Module(),
 		terminalnode.Module(),

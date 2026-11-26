@@ -2,7 +2,6 @@
 package codedesktop
 
 import (
-	codeindex "github.com/sailry/sailry-code/modules/code/code-index/desktop"
 	databases "github.com/sailry/sailry-code/modules/code/databases/desktop"
 	files "github.com/sailry/sailry-code/modules/code/files/desktop"
 	git "github.com/sailry/sailry-code/modules/code/git/desktop"
@@ -16,7 +15,7 @@ import (
 func Assembly() desktop.Assembly {
 	modules := []desktop.Module{
 		databases.Register, ssh.Register, files.Register, git.Register,
-		codeindex.Register, worktrees.Register, terminal.Register,
+		worktrees.Register, terminal.Register,
 	}
 	return desktop.Assemble(append(modules, harness.Modules()...)...)
 }

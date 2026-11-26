@@ -14,7 +14,7 @@ Most core development happens upstream in **[Sailry Harness](https://github.com/
 
 Contribute here in **`sailry-code`** for:
 
-- Code's 7 native developer modules (`modules/code/*`: `code-index`, `files`, `git`, `worktrees`, `terminal`, `databases`, `ssh`)
+- Code's 6 native developer modules (`modules/code/*`: `files`, `git`, `worktrees`, `terminal`, `databases`, `ssh`)
 - Product identity, `~/.sailry-code` / legacy migration (`internal/product`), and Code's Mobile views (`apps/mobile`)
 - Desktop, Host, and Mobile packaging, signing, and end-user releases (`cmd/*`, `.github/`)
 
@@ -85,9 +85,9 @@ reuse its Turso library. Keep `go.work` and `go.work.sum` local.
 | `cmd/update-feed` | Ed25519 update feed signer for macOS and Windows Desktop archives |
 | `cmd/package-env.sh` | Shared packaging environment (`SAILRY_PRODUCT=code`, release repo, `ProductVersion` ldflags) |
 | `internal/product` | Product identity, release URLs, `~/.sailry-code` / `~/.sailry` defaults, update public key |
-| `internal/assembly/codedesktop` | Combines Code's 7 Desktop modules with `sdk/desktop/harness.Modules()` |
-| `internal/assembly/codehost` | Combines `sdk/native/node.HarnessAssembly()` (empty `BundledDefaults`) with Code's 6 Node modules |
-| `modules/code/{code-index,databases,files,git,ssh,terminal,worktrees}` | Code-owned Desktop, Node, and backend service packages |
+| `internal/assembly/codedesktop` | Combines Code's 6 Desktop modules with `sdk/desktop/harness.Modules()` |
+| `internal/assembly/codehost` | Combines `sdk/native/node.HarnessAssembly()` (empty `BundledDefaults`) with Code's 5 Node modules |
+| `modules/code/{databases,files,git,ssh,terminal,worktrees}` | Code-owned Desktop, Node, and backend service packages |
 | `apps/mobile` | Flutter controller (`sailry_code_mobile`), Code project views (`git`, `files`), native FFI bridge |
 | `internal/testsupport`, `internal/visualparity` | Shared Go test fixtures and visual parity captures against legacy plugin baselines |
 | `docs/` | Code user guides |
@@ -123,12 +123,12 @@ for goos in linux windows darwin; do GOOS=$goos go vet -tags integration ./...; 
 
 # Race detector on concurrency-heavy Code modules (requires cgo + SAILRY_TURSO_LIB):
 CGO_ENABLED=1 go test -race -p 2 -parallel 4 \
-  ./modules/code/code-index/node ./modules/code/ssh/service ./modules/code/databases/service \
+  ./modules/code/ssh/service ./modules/code/databases/service \
   ./modules/code/git/service ./modules/code/terminal/node ./modules/code/worktrees/node
 
-# Integration tests (requires PostgreSQL 17, MySQL 8.4, SSH fixtures or Linux Git sandbox):
+# SSH and database integration tests (require PostgreSQL 17, MySQL 8.4, and SSH fixtures):
 go test -p 1 -timeout 20m -tags integration \
-  ./modules/code/ssh/service ./modules/code/databases/service ./modules/code/code-index/node ./internal/assembly/codehost
+  ./modules/code/ssh/service ./modules/code/databases/service
 
 # Visual parity captures against legacy baseline fixtures:
 bash internal/visualparity/run.sh
@@ -154,7 +154,7 @@ exact same `sailry-harness` commit SHA; do not add `apps/mobile/pubspec_override
     non-Go docs/licenses change.
   - `checks` runs `test_workflows.py` / `test_bootstrap.py` / `test_mobile_native.py`,
     Linux Bubblewrap setup, `gofmt`, cross-OS `go vet -tags integration ./...`,
-    `go test ./...`, and `-race` tests across the 6 Code service/node packages.
+    `go test ./...`, and `-race` tests across the 5 Code service/node packages.
   - `native` stages Turso, Capture, and Windows CRT (`SHA256SUMS`) for `linux-arm64`,
     `darwin-arm64`, `darwin-amd64`, and `windows-amd64`; `platform-tests` validates
     OS-sensitive Code modules on macOS ARM64 and Windows x64.
@@ -162,7 +162,7 @@ exact same `sailry-harness` commit SHA; do not add `apps/mobile/pubspec_override
     Developer ID + notarization when `distribution: true`); `windows` cross-builds
     NSIS installer + portable ZIP on Ubuntu; `host-linux` builds x64 and ARM64 Host tarballs.
   - Optional `integration` and `repository-integration` run live Postgres 17, MySQL 8.4,
-    SSH, code-index, and multi-OS Git/worktree suites.
+    SSH, and multi-OS Git/worktree suites.
 - **`.github/workflows/mobile.yml`** runs **only via `workflow_dispatch`** (never on
   PRs or `main`). It runs `flutter analyze` and `flutter test`. Package builds produce
   an Android ARM64 APK or an unsigned iOS app. With uploads enabled, all seven

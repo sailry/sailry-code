@@ -46,7 +46,7 @@ func TestRunPreservesProfileSelectionAndSDKArguments(t *testing.T) {
 				if options.NativeName != "Sailry Code" || options.NativeName == identity.Release.Package.Name {
 					t.Fatalf("Code shares Harness preferences or its instance name: %q", options.NativeName)
 				}
-				if len(options.Assembly.ExecutionSettings) == 0 || !options.Host.HasModule("code-index") {
+				if len(options.Assembly.ProjectWorkflows) == 0 || !options.Host.HasModule("git") {
 					t.Fatal("Code desktop lost its product assembly")
 				}
 				return failure

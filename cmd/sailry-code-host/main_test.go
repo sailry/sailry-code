@@ -43,7 +43,7 @@ func TestRunPreservesProfileSelectionAndSDKArguments(t *testing.T) {
 				if got, err := identity.DataDir(""); err != nil || got != filepath.Join(home, ".sailry-code") {
 					t.Fatalf("host default directory = %q, %v", got, err)
 				}
-				if !options.Assembly.HasModule("code-index") {
+				if !options.Assembly.HasModule("git") {
 					t.Fatal("Code Host lost its product assembly")
 				}
 				return 7, failure

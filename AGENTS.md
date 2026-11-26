@@ -15,7 +15,7 @@ commands. Framework contracts and core runtime rules belong to upstream
 - The Go module is `github.com/sailry/sailry-code` and the Flutter package is
   `sailry_code_mobile`. Sailry Code owns its product identity (`internal/product`),
   Desktop/Host/Mobile assemblies (`internal/assembly/*`, `apps/mobile/lib/assembly/`),
-  and the seven developer modules under `modules/code/`.
+  and the six developer modules under `modules/code/`.
 - Depend one-way on `github.com/sailry/sailry-harness` solely through its public
   `sdk/*` Go facades and `apps/mobile` Dart packages (`sailry_mobile`, `sailry_bridge`).
   Never import Harness `internal/*` packages, fork Harness internals into this
@@ -94,8 +94,6 @@ commands. Framework contracts and core runtime rules belong to upstream
 ## Security and data protection
 
 - Enforce real boundaries inside each Code service:
-  - **Code Index**: keep queries bounded (`maxFiles = 50_000`, bounded grammar cache
-    limit `8`, idle release `2m`) and respect worktree ignore/confinement rules.
   - **Databases**: enforce SQL/row/result bounds (`64 KiB` SQL, `10_000` rows,
     `512 KiB` output), force `database_query` read-only, gate `database_execute`
     under session permissions, block SQLite files inside Node storage, and keep

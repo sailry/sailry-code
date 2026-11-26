@@ -256,7 +256,7 @@ class WorkflowConfigurationTests(unittest.TestCase):
             with self.subTest(secret=secret):
                 self.assertIn(f"          {secret}: ${{{{ inputs.upload && secrets.{secret} || '' }}}}", policy)
 
-    def test_moved_integration_suites_have_database_fixtures_and_release_coverage(self):
+    def test_integration_suites_have_database_fixtures_and_release_coverage(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         job = workflow.split("\n  integration:\n", 1)[1].split("\n  repository-integration:\n", 1)[0]
         self.assertIn("    needs: native-linux\n", job)
@@ -274,9 +274,9 @@ class WorkflowConfigurationTests(unittest.TestCase):
             for setting in ["DATABASE", "USERNAME", "PASSWORD"]:
                 self.assertRegex(job, rf"(?m)^      {prefix}{setting}: .+$")
             self.assertIn(f"      {engine}:\n        image:", job)
-        step = job.split("      - name: SSH, database and code-index integration tests\n", 1)[1]
+        step = job.split("      - name: SSH and database integration tests\n", 1)[1]
         script = textwrap.dedent(step.split("        run: |\n", 1)[1])
-        packages = ["./modules/code/ssh/service", "./modules/code/databases/service", "./modules/code/code-index/node", "./internal/assembly/codehost"]
+        packages = ["./modules/code/ssh/service", "./modules/code/databases/service"]
         for package in packages:
             self.assertTrue(any((ROOT / package).glob("*integration_test.go")), package)
         with tempfile.TemporaryDirectory(prefix="code-integration-entry-") as temporary:
@@ -359,11 +359,11 @@ print(json.dumps([os.environ.get("GOPROXY"), sys.argv[1:]]))
                 return dict(line.split("=", 1) for line in output.read_text().splitlines())
 
         self.assertEqual(run_scope(changed="README.md\nREADME.zh-CN.md\ndocs/guide.md\n"), {"go": "false", "packages": "false"})
-        self.assertEqual(run_scope(changed="modules/code/code-index/node/service.go\n"), {"go": "true", "packages": "false"})
+        self.assertEqual(run_scope(changed="modules/code/ssh/service/service.go\n"), {"go": "true", "packages": "false"})
         self.assertEqual(run_scope(changed="modules/code/git/service/executable_windows.go\n"), {"go": "true", "packages": "true"})
         self.assertEqual(run_scope(changed="modules/code/terminal/node/service.go\n"), {"go": "true", "packages": "true"})
         self.assertEqual(run_scope(changed="cmd/sailry-code-desktop/main.go\n"), {"go": "true", "packages": "true"})
-        self.assertEqual(run_scope(event="push", changed="modules/code/code-index/node/service.go\n"), {"go": "true", "packages": "true"})
+        self.assertEqual(run_scope(event="push", changed="modules/code/ssh/service/service.go\n"), {"go": "true", "packages": "true"})
         self.assertEqual(run_scope(changed="README.md\n", distribution="true"), {"go": "true", "packages": "true"})
 
     def test_platform_tests_cover_macos_and_windows_os_packages(self):
@@ -372,7 +372,7 @@ print(json.dumps([os.environ.get("GOPROXY"), sys.argv[1:]]))
         self.assertIn("    needs: [scope, native]\n", job)
         for target in ["darwin-arm64", "windows-amd64"]:
             self.assertIn(f"target: {target}", job)
-        for pkg in ["./modules/code/code-index/node", "./modules/code/git/service", "./modules/code/databases/service", "./modules/code/terminal/node"]:
+        for pkg in ["./modules/code/git/service", "./modules/code/databases/service", "./modules/code/terminal/node"]:
             self.assertIn(pkg, job)
 
     def test_go_runtime_verification_rejects_missing_or_corrupt_library(self):

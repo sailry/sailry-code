@@ -5,8 +5,8 @@
 ## System context
 
 ```text
-cmd/sailry-code-desktop ─▶ codedesktop.Assembly() ─▶ Harness sdk/desktop + 7 Code desktop modules
-                         └▶ codehost.Assembly()    ─▶ Harness sdk/native/node + 6 Code node modules
+cmd/sailry-code-desktop ─▶ codedesktop.Assembly() ─▶ Harness sdk/desktop + 6 Code desktop modules
+                         └▶ codehost.Assembly()    ─▶ Harness sdk/native/node + 5 Code node modules
 
 cmd/sailry-code-host    ─▶ codehost.Assembly()    ─▶ Headless Host runtime + Code node modules
 
@@ -30,8 +30,8 @@ Sailry Code depends one-way on `github.com/sailry/sailry-harness` through its pu
 | `cmd/update-feed` | Ed25519 Desktop update catalog signer using `sdk/release.PublishDesktop` |
 | `cmd/package-env.sh` | Packaging environment (`SAILRY_PRODUCT=code`, release repository, `ProductVersion` ldflags) |
 | `internal/product` | Product identity (`ID="code"`, `~/.sailry-code`, `~/.sailry` legacy migration, embedded update public key) |
-| `internal/assembly/codedesktop` | Combines Code's 7 Desktop modules with `sdk/desktop/harness.Modules()` |
-| `internal/assembly/codehost` | Combines `sdk/native/node.HarnessAssembly()` with Code's 6 Node modules |
+| `internal/assembly/codedesktop` | Combines Code's 6 Desktop modules with `sdk/desktop/harness.Modules()` |
+| `internal/assembly/codehost` | Combines `sdk/native/node.HarnessAssembly()` with Code's 5 Node modules |
 | `modules/code/*` | Native Code Desktop, Node, and backend service implementations |
 | `apps/mobile` | Flutter controller (`sailry_code_mobile`), `codeAssembly`, Code `git` & `files` project resources |
 | `internal/testsupport`, `internal/visualparity` | Shared Go test fixtures and visual parity comparisons against legacy plugin baselines |
@@ -42,9 +42,8 @@ Each Code module registers directly with Harness host contracts in Go (no JS VM 
 
 | Module | Replaces | Desktop (`codedesktop`) | Node (`codehost`) & Backend Service |
 | --- | --- | --- | --- |
-| `code-index` | `code` | Conversation settings (`ExecutionSettings`: `enabled`, `persistent` switches via `read/save_code_index_settings`) | `codeindex.Module()` (`sdk/native/codeindex.Service`), `gotreesitter` parser + BLAKE3 cache, 6 tools (`code_search`, `code_outline`, `code_context`, `code_impact`, `code_map`, `code_pipeline`) |
 | `databases` | `databases` | `page:databases` (default-pinned, `moejs` view, `database` link handler) | `databasesnode.Module()` (`DatabaseServiceProvider`), MySQL (`go-sql-driver/mysql`), PostgreSQL (`pgx/v5`), SQLite (`modernc.org/sqlite`), optional SSH tunnel, 5 tools (`database_catalog`, `database_query`, `database_execute`, `database_connections`, `database_save_connection`) |
-| `files` | `files` / `files-workspace` | `native.FilesPage` (default-pinned), `native.Files` conversation panel (`Cmd+P`), file tree/search/tabs/trash/transfers, `file`/`directory` links | Uses Harness's `modules/files/node` included via `HarnessAssembly()` |
+| `files` | `files` / `files-workspace` | `native.FilesPage` (default-pinned), `native.Files` conversation panel (`Cmd+P`), file tree/search/tabs/trash/transfers, `file`/`directory` links | Uses Harness's `modules/files/node` via `HarnessAssembly()` for `find_files`, `search_files`, `read_file`, and other file tools |
 | `git` | `git` | `page:git` (`Ctrl+Shift+G`, default-pinned, checkpoint history), project context menu, replaces `git` slot controls (`branch`, `manage`, `changes`) | `gitnode.Module()` (`WorkspaceServiceProvider{Git: true}`), native Git + `go-git/v5` engine, repo watch, `clone` preparer, hunk checkpoints, workspace commands, 7 read-only tools (`git_status`, `git_diff`, `git_log`, `git_show`, `git_blame`, `list_git_changes`, `read_git_change`) |
 | `ssh` | `ssh` | `page:ssh` (default-pinned, `moejs` view), SFTP transfer worker, session tabs, `ssh` link handler | `sshnode.Module()` (`SSHServiceProvider`), `x/crypto/ssh` + `pkg/sftp` pool, remote command & file transfers, remote `sailry-host` install/update, 4 tools (`ssh_run`, `ssh_transfer`, `ssh_connections`, `ssh_save_connection`) |
 | `terminal` | `commands` slots | Registered main-workspace terminal pane for project rows and header tabs, `native.Terminal` panel (`Ctrl+\``), project "new terminal" action, `settings.Terminal` page, replaces `commands` terminal slots (`terminal-cli`, `terminal-menu-new`, `terminal-menu-cli`) | `terminalnode.Module()` (`TerminalServiceProvider` via `node.NewTerminalService`) + embedded `python` skill (`$SAILRY_PYTHON`, Python 3.12.13) |
@@ -52,7 +51,6 @@ Each Code module registers directly with Harness host contracts in Go (no JS VM 
 
 ### Service boundaries and resource budgets
 
-- **Code Index**: Live scans inspect workspace files under ignore/confinement rules; persistent per-worktree indexes store derived declarations/references/imports in Turso under the profile cache. Scans cap worktrees at `maxFiles = 50_000`, share a bounded parser permit, retain at most `grammarCacheLimit = 8` decoded `gotreesitter` grammar tables in memory (purged when idle), and close inactive worktree handles/watches after `idleRelease = 2m`.
 - **Databases**: Enforces `64 KiB` max SQL, `10,000` max rows, `512 KiB` max serialized response, and `3,600,000 ms` max timeout. `database_query` forces read-only execution; `database_execute` goes through session permission checks and honors read-only profiles. SQLite paths inside the Node storage directory are rejected; credentials remain isolated on the owning Node.
 - **Terminal**: Settings reject reserved environment variables (`SAILRY_*`, `DMUX_*`, `LD_*`, `DYLD_*`, `*_PRELOAD`, `TERM`, `PWD`, `BASH_ENV`, `ENV`, `ZDOTDIR`, `IFS`, `NODE_OPTIONS`, `PERL5OPT`, `PYTHONSTARTUP`).
 - **Git & Worktrees**: Managed worktrees isolate parallel conversations/subagents; Git operations preserve worktree locks, revision checks, and sandbox constraints inherited from Harness.

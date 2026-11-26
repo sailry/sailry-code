@@ -14,10 +14,7 @@ import (
 
 func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
 	base := node.HarnessAssembly()
-	if base.CodeIndex != nil {
-		t.Fatal("Harness assembly includes the Code index service")
-	}
-	development := map[string]bool{"git": false, "worktrees": false, "code-index": false, "databases": false, "ssh": false, "terminal": false}
+	development := map[string]bool{"git": false, "worktrees": false, "databases": false, "ssh": false, "terminal": false}
 	for _, module := range base.Modules {
 		if _, ok := development[module.ID()]; ok {
 			t.Fatalf("Harness assembly includes Code module %q", module.ID())
@@ -25,7 +22,7 @@ func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
 	}
 
 	assembly := codehost.Assembly()
-	if assembly.CodeIndex != nil || assembly.Terminal != nil || assembly.Databases != nil || assembly.SSH != nil || assembly.LegacyWorkspaceModules {
+	if assembly.Terminal != nil || assembly.Databases != nil || assembly.SSH != nil || assembly.LegacyWorkspaceModules {
 		t.Fatal("Code assembly should select modules without service overrides or legacy selection")
 	}
 	if assembly.BundledDefaults == nil || len(assembly.BundledDefaults) != 0 {
@@ -36,7 +33,7 @@ func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
 	}
 	seen := make(map[string]bool, len(assembly.Modules))
 	var workspace node.WorkspaceServices
-	var database, ssh, terminal, index bool
+	var database, ssh, terminal bool
 	for _, module := range assembly.Modules {
 		id := module.ID()
 		if seen[id] {
@@ -57,10 +54,9 @@ func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
 		_, hasDatabase := module.(node.DatabaseServiceProvider)
 		_, hasSSH := module.(node.SSHServiceProvider)
 		_, hasTerminal := module.(node.TerminalServiceProvider)
-		_, hasIndex := module.(node.CodeIndexServiceProvider)
-		database, ssh, terminal, index = database || hasDatabase, ssh || hasSSH, terminal || hasTerminal, index || hasIndex
+		database, ssh, terminal = database || hasDatabase, ssh || hasSSH, terminal || hasTerminal
 	}
-	if !workspace.Git || !workspace.Worktrees || !database || !ssh || !terminal || !index {
+	if !workspace.Git || !workspace.Worktrees || !database || !ssh || !terminal {
 		t.Fatal("Code modules did not provide all development services")
 	}
 	for id, present := range development {
