@@ -85,15 +85,87 @@ func (pr *repository) commitRow(c *ui.Context, b ui.Element, cm native.Workspace
 		OnClick(func() { pr.pickCommit(cm.ID) })
 }
 
+type gitHistoryCache struct {
+	count        int
+	fingerprint  uint64
+	lanes        []int
+	lanesOK      bool
+	lanesValid   bool
+	branch       string
+	wide         bool
+	live         bool
+	text         float32
+	locale       string
+	minute       int64
+	commits      []code.GraphCommit
+	commitsValid bool
+}
+
+func hashUint64(h, v uint64) uint64 {
+	for range 8 {
+		h ^= v & 0xff
+		h *= 1099511628211
+		v >>= 8
+	}
+	return h
+}
+
+func hashStr(h uint64, s string) uint64 {
+	h = hashUint64(h, uint64(len(s)))
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= 1099511628211
+	}
+	return h
+}
+
+func commitsFingerprint(commits []native.WorkspaceCommit) uint64 {
+	var h uint64 = 14695981039346656037
+	h = hashUint64(h, uint64(len(commits)))
+	for _, cm := range commits {
+		h = hashStr(h, cm.ID)
+		h = hashStr(h, cm.Message)
+		h = hashStr(h, cm.Author)
+		h = hashUint64(h, uint64(cm.Time.UnixNano()))
+		if cm.Parents == nil {
+			h = hashUint64(h, 0)
+		} else {
+			h = hashUint64(h, uint64(len(cm.Parents))+1)
+			for _, p := range cm.Parents {
+				h = hashStr(h, p)
+			}
+		}
+		h = hashUint64(h, uint64(len(cm.Refs)))
+		for _, r := range cm.Refs {
+			h = hashStr(h, r)
+		}
+	}
+	return h
+}
+
 // historyGraph draws the history as a graph and reports whether it could.
 func (pr *repository) historyGraph(c *ui.Context) bool {
 	p := theme.Of(c)
 	v := &pr.view
 	repo := &pr.Data.Repo
-	lanes, ok := graphLanes(repo.Commits)
-	if !ok {
+	count := len(repo.Commits)
+	if count == 0 {
+		v.historyCache = gitHistoryCache{}
 		return false
 	}
+	fp := commitsFingerprint(repo.Commits)
+	hc := &v.historyCache
+	if !hc.lanesValid || hc.count != count || hc.fingerprint != fp {
+		hc.lanes, hc.lanesOK = graphLanes(repo.Commits)
+		hc.count, hc.fingerprint = count, fp
+		hc.lanesValid = true
+		hc.commitsValid = false
+	}
+	if !hc.lanesOK {
+		return false
+	}
+	lanes := hc.lanes
+	live := pr.live()
 	now := pr.now(c)
 	// What a row has for its text: the list's width less the scroll's
 	// padding, the graph's own, the lanes, and the short ID with its gap.
@@ -109,21 +181,29 @@ func (pr *repository) historyGraph(c *ui.Context) bool {
 	if text >= graphNames {
 		most = math.MaxInt
 	}
-	commits := make([]code.GraphCommit, len(repo.Commits))
-	for i, cm := range repo.Commits {
-		subject, _, _ := strings.Cut(cm.Message, "\n")
-		k := code.GraphCommit{Hash: cm.ID, Message: strings.TrimSpace(subject), Lane: lanes[i], Parents: cm.Parents}
-		labels := refLabels(cm.Refs, repo.Branch)
-		if wide {
-			k.Author = cm.Author
-			if !cm.Time.IsZero() {
-				k.Author = strings.TrimPrefix(cm.Author+" · "+native.AgeLabel(c, cm.Time, now), " · ")
+	minute := now.Unix() / 60
+	var commits []code.GraphCommit
+	if hc.commitsValid && hc.live == live && hc.branch == repo.Branch && hc.wide == wide && hc.text == text && hc.minute == minute && hc.locale == c.Locale() && len(hc.commits) == count {
+		commits = hc.commits
+	} else {
+		commits = make([]code.GraphCommit, count)
+		for i, cm := range repo.Commits {
+			subject, _, _ := strings.Cut(cm.Message, "\n")
+			k := code.GraphCommit{Hash: cm.ID, Message: strings.TrimSpace(subject), Lane: lanes[i], Parents: cm.Parents}
+			labels := refLabels(cm.Refs, repo.Branch)
+			if wide {
+				k.Author = cm.Author
+				if !cm.Time.IsZero() {
+					k.Author = strings.TrimPrefix(cm.Author+" · "+native.AgeLabel(c, cm.Time, now), " · ")
+				}
+				k.Refs = fitRefs(labels, (text-6*float32(utf8.RuneCountInString(k.Author)))/2, most)
+			} else {
+				k.Refs = fitRefs(labels, text/2, most)
 			}
-			k.Refs = fitRefs(labels, (text-6*float32(utf8.RuneCountInString(k.Author)))/2, most)
-		} else {
-			k.Refs = fitRefs(labels, text/2, most)
+			commits[i] = k
 		}
-		commits[i] = k
+		hc.locale = c.Locale()
+		hc.live, hc.branch, hc.wide, hc.text, hc.minute, hc.commits, hc.commitsValid = live, repo.Branch, wide, text, minute, commits, true
 	}
 	top, height := kit.CommitGraphRows(c)
 	// The fills are painted under the graph, by the rows built over it, and

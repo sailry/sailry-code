@@ -23,7 +23,7 @@ type repositoryView struct {
 	current                    string
 	view                       int
 	commitID                   string
-	folded                     map[string]bool
+	diffOpen                   map[string]bool
 	commit, draft              string
 	tall, amend, signoff, skip bool
 	after                      string
@@ -34,13 +34,14 @@ type repositoryView struct {
 	tagIDs                     map[string]string
 	operation                  bool
 	log                        GitHistoryState
+	historyCache               gitHistoryCache
 	switchPending              []native.WorkspaceOperation
 	list, history              ui.ScrollState
 	side                       float32
 }
 
 func newView() repositoryView {
-	return repositoryView{nav: defaultNav, expanded: map[string]*bool{}, folded: map[string]bool{}, after: "none", side: native.WorkspaceSideWidth}
+	return repositoryView{nav: defaultNav, expanded: map[string]*bool{}, after: "none", side: native.WorkspaceSideWidth}
 }
 
 func viewOf(project *native.Project) *repository {

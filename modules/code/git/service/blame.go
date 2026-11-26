@@ -22,14 +22,24 @@ func (s *Service) blameSlot(ctx context.Context, root string) (func(), error) {
 	s.mu.Lock()
 	slot := s.blames[root]
 	if slot == nil {
-		slot = make(chan struct{}, 1)
+		slot = &blameSlot{token: make(chan struct{}, 1)}
 		s.blames[root] = slot
 	}
+	slot.users++
 	s.mu.Unlock()
+	release := func() {
+		s.mu.Lock()
+		slot.users--
+		if slot.users == 0 {
+			delete(s.blames, root)
+		}
+		s.mu.Unlock()
+	}
 	select {
-	case slot <- struct{}{}:
-		return func() { <-slot }, nil
+	case slot.token <- struct{}{}:
+		return func() { <-slot.token; release() }, nil
 	case <-ctx.Done():
+		release()
 		return nil, mapError(ctx.Err())
 	}
 }

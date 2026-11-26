@@ -1,6 +1,6 @@
 import {View} from 'gpui-kit';
 import {context,nextAssistantTools,header_action,releaseAssistant} from 'sailry';
-import {nextChange,readProjectCatalog} from 'sailry/sdk';
+import {nextChange,readProjectCatalog,forgetRequest} from 'sailry/sdk';
 import {listDatabases,listSsh,newDatabaseId,prepareDatabase} from 'sailry/connections';
 import {createText,readText,setText,releaseText,focusText,nextTextEvent} from 'sailry/forms';
 import {createSecret,releaseSecret,describeSecret} from 'sailry/credentials';
@@ -20,6 +20,13 @@ export const cell=value=>value.kind === 'null' ? 'NULL' : value.kind === 'blob' 
 export const historyEntries=logs=>[...logs].reverse();
 export const historyRevision=(profile,logs)=>`${profile}:${logs.length}:${logs.at(-1)?.id??''}`;
 export const rowText=rows=>rows.map(row=>row.map(cell).map(value=>/[\t\n\r"]/.test(value) ? `"${value.replace(/"/g,'""')}"` : value).join('\t')).join('\n');
+function summarizeResult(result, error) {
+  return {
+    error: error ? {message: error.message, code: error.code} : null,
+    count: result ? (result.columns?.length ? result.rows.length : result.affected_rows) : null,
+    hasResult: !!result,
+  };
+}
 
 export default class Databases extends View {
   init(_props,cx) {
@@ -65,7 +72,7 @@ export default class Databases extends View {
       this.refreshProjects=false;this.refreshCatalog=false;
       try {
         const [profiles,ssh,choices]=await Promise.all([listDatabases(),listSsh(),projects?readProjectCatalog():null]);this.profiles=profiles;this.ssh=ssh;
-        if(this.opened&&!this.profile()){releaseAssistant(this.opened);this.opened=null;this.catalog=null;this.result=null;this.origin=null;this.epoch++;}
+        if(this.opened&&!this.profile()){releaseAssistant(this.opened);this.opened=null;this.catalog=null;this.result=null;this.origin=null;this.logs=[];this.selectedLog=null;this.historyPage=0;this.histories.clear();this.epoch++;}
         if(projects){this.projects=choices.projects;projects=false;}
         const current=this.catalog,profile=this.profile();
         if(catalog&&current&&profile&&!this.pending&&!current.loading.size){
@@ -81,7 +88,7 @@ export default class Databases extends View {
     if(event.kind==='select'){this.home=false;cx.notify();return;}
     if(event.kind!=='close')return;
     releaseAssistant(this.opened);
-    this.opened=null;this.catalog=null;this.result=null;this.origin=null;this.status=null;this.sqlOpen=false;this.epoch++;this.page=0;cx.notify();
+    this.opened=null;this.catalog=null;this.result=null;this.origin=null;this.status=null;this.sqlOpen=false;this.logs=[];this.selectedLog=null;this.historyPage=0;this.histories.clear();this.epoch++;this.page=0;cx.notify();
   }
   control(event,cx) {
     if(event.id==='db-new'){if(!this.locked())this.edit(null,cx);return;}
@@ -132,7 +139,7 @@ export default class Databases extends View {
     return command('query_database',{profile:profile.id,expected_revision:profile.revision,database:database??null,sql:sqlText,read_only:readOnly,row_limit:1000,timeout_ms:30000});
   }
   async execute(value,cx,origin=null,after=null,id=null,present=true) {
-    if(this.pending||!this.connected)return null;
+    if(this.pending||!this.connected){if(id)forgetRequest(id);return null;}
     const request=new Request(value,id); this.pending={request,origin,after,present};this.error=null;this.status=null;
     if(value?.kind==='query_database') {this.logs.push({id:request.id,sql:value.data.sql,database:value.data.database,timestamp:Date.now(),request});if(this.logs.length>100)this.logs.shift();}
     await request.start(cx);if(request.unknown)this.report(request.uncertainty??{code:'outcome_unknown'});return await this.finish(cx);
@@ -140,11 +147,13 @@ export default class Databases extends View {
   async finish(cx) {
     const pending=this.pending;if(!pending||!pending.request.done)return null;
     const {request,origin,after}=pending;this.pending=null;request.release();
-    const entry=this.logs.find(entry=>entry.id===request.id);if(entry&&!entry.elapsed)entry.elapsed=(Date.now()-entry.timestamp)/1000;
-    if(request.error){this.report(request.error);return null;}
     const output=request.output;
-    if(pending.present!==false&&output.kind==='database_outcome'&&output.data.kind==='query') {
-      this.result=output.data.data;this.origin=origin;this.epoch++;this.page=0;
+    const queryResult=output?.kind==='database_outcome'&&output.data?.kind==='query'?output.data.data:null;
+    const entry=this.logs.find(entry=>entry.id===request.id);
+    if(entry){if(!entry.elapsed)entry.elapsed=(Date.now()-entry.timestamp)/1000;entry.summary=summarizeResult(queryResult,request.error);entry.request=null;}
+    if(request.error){this.report(request.error);return null;}
+    if(pending.present!==false&&queryResult) {
+      this.result=queryResult;this.origin=origin;this.epoch++;this.page=0;
     } else if(output.kind==='database_outcome'&&output.data.kind==='connected')this.notice('db_connected');
     if(after)await after(output,cx);cx.notify();return output;
   }
@@ -251,7 +260,7 @@ export default class Databases extends View {
       for(const call of history.updates(snapshot,previous)) {
         if(call.arguments.connection!==this.opened)continue;
         let entry=this.logs.find(entry=>entry.id===call.key);if(!entry){entry={id:call.key,sql:call.arguments.sql,database:call.arguments.database,timestamp:call.timestamp_ms};this.logs.push(entry);if(this.logs.length>100)this.logs.shift();}
-        const result=history.result(call);entry.result=result;
+        const result=history.result(call);entry.summary=summarizeResult(result.rows,result.error);
         if(result.rows){this.result=result.rows;this.origin={profile:JSON.parse(JSON.stringify(this.profile())),database:entry.database,sql:entry.sql,table:null,keys:[]};this.epoch++;this.page=0;if(call.live)this.error=null;}
         if(result.error&&call.live)this.report(result.error);
       }

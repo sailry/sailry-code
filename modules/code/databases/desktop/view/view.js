@@ -64,6 +64,10 @@ function results(view) {
 function log(view) {
   const {text}=view,entries=historyEntries(view.logs);
   const status=entry=>{
+    if(entry.summary){
+      const {error,count,hasResult}=entry.summary;
+      return {error,label:error?text.db_failed:hasResult?format(text.db_rows,{count}):text.db_running};
+    }
     const result=entry.result?.rows??entry.request?.output?.data?.data,error=entry.result?.error??entry.request?.error;
     return {error,label:entry.request?.unknown?text.db_unknown:error?text.db_failed:result?format(text.db_rows,{count:result.columns.length?result.rows.length:result.affected_rows}):text.db_running};
   };

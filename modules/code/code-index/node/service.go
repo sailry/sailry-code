@@ -182,6 +182,7 @@ func (s *Service) releaseIdle(now time.Time) {
 		wt.access.Unlock()
 	}
 	if purgeGrammars {
+		s.live.clear()
 		grammars.PurgeEmbeddedLanguageCache()
 		gotreesitter.DrainArenaPools()
 	}

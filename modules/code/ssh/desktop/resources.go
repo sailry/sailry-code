@@ -32,6 +32,28 @@ func (v *resourceViews) effect(apply func(protocol.TerminalID)) requestOperation
 	}
 }
 
+func (v *resourceViews) effectSsh(apply func(protocol.SshID)) requestOperation {
+	return func(_ context.Context, arguments []json.RawMessage) (json.RawMessage, error) {
+		id, err := argument[protocol.SshID](arguments, 0)
+		if err != nil {
+			return nil, err
+		}
+		if !v.services.Post(func(*ui.Context) { apply(id) }) {
+			return nil, sshTransferKey("SSH workspace is closed")
+		}
+		return json.RawMessage("null"), nil
+	}
+}
+
+func (v *resourceViews) releaseConversation(id protocol.SshID) {
+	if mounted, ok := v.conversations[id]; ok {
+		delete(v.conversations, id)
+		if mounted.Close != nil {
+			mounted.Close()
+		}
+	}
+}
+
 // terminalView mounts only a saved connection's terminal.
 func (v *resourceViews) terminalView(id protocol.TerminalID) (view.Terminal, bool) {
 	if mounted, ok := v.terminals[id]; ok {

@@ -16,7 +16,10 @@ import (
 
 // allChanges is the item of the diff of every change (Diff, the git
 // plugin's combined document); no path starts with ":".
-const allChanges = ":changes"
+const (
+	allChanges            = ":changes"
+	combinedAutoOpenLimit = 20
+)
 
 // GitRepository is the Git component's side column, as the git plugin's
 // view.js details lays it out: the branch, the actions menu and Refresh;
@@ -525,9 +528,14 @@ func (pr *repository) combined(c *ui.Context, narrow bool) {
 	ui.Scroll(c.Key("git-combined")).Grow(1).Padding(8).Gap(8).Children(func() {
 		for i := range pr.Data.Changes {
 			ch := &pr.Data.Changes[i]
-			pr.readVisibleDiff(ch.Path, "all")
 			add, del = add+ch.Added, del+ch.Removed
-			open := !v.folded[ch.Path]
+			open, overridden := v.diffOpen[ch.Path]
+			if !overridden {
+				open = i < combinedAutoOpenLimit
+			}
+			if open {
+				pr.readVisibleDiff(ch.Path, "all")
+			}
 			ui.Column(c.Key(ch.Path)).Shrink(0).Radius(p.Radius).Border(1, p.Border).Clip().Children(func() {
 				head := ui.ButtonBase(c.Key("heading")).Label(ch.Path).Height(32).PaddingX(8).Gap(8).Cursor(ui.CursorPointer).
 					Expanded(open)
@@ -552,7 +560,12 @@ func (pr *repository) combined(c *ui.Context, narrow bool) {
 							pr.dispatch(c, native.GitAction{Kind: "git_discard_all", Paths: []string{ch.Path}})
 						}}
 					})
-				}).OnClick(func() { v.folded[ch.Path] = open })
+				}).OnClick(func() {
+					if v.diffOpen == nil {
+						v.diffOpen = make(map[string]bool)
+					}
+					v.diffOpen[ch.Path] = !open
+				})
 				if open {
 					metadata := ch.Diff
 					if metadata.Scope == "all" && metadata.Binary {

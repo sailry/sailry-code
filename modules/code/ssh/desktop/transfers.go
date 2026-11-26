@@ -68,16 +68,19 @@ type sshTransferStatus struct {
 	fault        *protocol.Fault
 }
 
+const maxFinishedSSHTransfers = 64
+
 type transferJob struct {
-	access    sshTransferAccess
-	upload    bool
-	local     string
-	directory bool
-	remote    string
-	status    sshTransferStatus
-	plan      sshTransferPlan
-	cancel    context.CancelFunc
-	busy      bool
+	finishedAt uint64
+	access     sshTransferAccess
+	upload     bool
+	local      string
+	directory  bool
+	remote     string
+	status     sshTransferStatus
+	plan       sshTransferPlan
+	cancel     context.CancelFunc
+	busy       bool
 }
 
 func (job *transferJob) snapshot(id protocol.RequestID) map[string]any {
@@ -117,15 +120,16 @@ func (job *transferJob) snapshot(id protocol.RequestID) map[string]any {
 }
 
 type transferStore struct {
-	mu      sync.Mutex
-	jobs    map[protocol.RequestID]*transferJob
-	changed chan struct{}
-	uploads chan struct{}
-	cursor  uint64
+	mu        sync.Mutex
+	jobs      map[protocol.RequestID]*transferJob
+	changed   chan struct{}
+	uploads   chan struct{}
+	downloads chan struct{}
+	cursor    uint64
 }
 
 func newTransferStore() *transferStore {
-	return &transferStore{jobs: map[protocol.RequestID]*transferJob{}, changed: make(chan struct{}), uploads: make(chan struct{}, 2)}
+	return &transferStore{jobs: map[protocol.RequestID]*transferJob{}, changed: make(chan struct{}), uploads: make(chan struct{}, 2), downloads: make(chan struct{}, 2)}
 }
 
 func (s *transferStore) publish() {
@@ -143,6 +147,32 @@ func (s *transferStore) close() {
 		if job.cancel != nil && job.status.stage != sshTransferPublishing {
 			job.cancel()
 		}
+	}
+}
+
+// A completion can add one job to the retained results. Keep the most recent
+// completions even when an older transfer finishes after newer transfers.
+func (s *transferStore) pruneFinished(latest *transferJob) {
+	if latest.status.stage != sshTransferDone && (latest.status.stage != sshTransferFailed || latest.plan.pending != nil) {
+		return
+	}
+	latest.finishedAt = s.cursor
+	if len(s.jobs) <= maxFinishedSSHTransfers {
+		return
+	}
+	var oldest protocol.RequestID
+	oldestAt, count := latest.finishedAt, 0
+	for id, job := range s.jobs {
+		if job.finishedAt == 0 {
+			continue
+		}
+		count++
+		if job.finishedAt < oldestAt {
+			oldest, oldestAt = id, job.finishedAt
+		}
+	}
+	if count > maxFinishedSSHTransfers {
+		delete(s.jobs, oldest)
 	}
 }
 
@@ -235,6 +265,7 @@ func (s *transferStore) action(id string, kind string, available func(protocol.S
 	host := job.access.host
 	ctx, cancel := context.WithCancel(host.context)
 	plan := job.plan
+	job.finishedAt = 0
 	job.cancel, job.busy, job.status, job.plan = cancel, true, sshTransferStatus{stage: sshTransferPreparing}, sshTransferPlan{}
 	started := host.async(func() {
 		defer cancel()
@@ -254,10 +285,20 @@ func (s *transferStore) action(id string, kind string, available func(protocol.S
 				status = sshTransferFailure(sshTransferCancelled())
 			}
 		} else {
-			status = job.access.download(ctx, job.remote, job.local, job.directory, update)
+			select {
+			case s.downloads <- struct{}{}:
+				status = job.access.download(ctx, job.remote, job.local, job.directory, update)
+				<-s.downloads
+			case <-ctx.Done():
+				status = sshTransferFailure(sshTransferCancelled())
+			}
+		}
+		if status.stage == sshTransferDone {
+			plan = sshTransferPlan{}
 		}
 		s.mu.Lock()
 		job.plan, job.status, job.busy, job.cancel = plan, status, false, nil
+		s.pruneFinished(job)
 		s.publish()
 		s.mu.Unlock()
 	})
@@ -265,6 +306,7 @@ func (s *transferStore) action(id string, kind string, available func(protocol.S
 		cancel()
 		job.plan, job.busy, job.cancel = plan, false, nil
 		job.status = sshTransferFailure(sshTransferUnavailable())
+		s.pruneFinished(job)
 	}
 	s.publish()
 	return nil

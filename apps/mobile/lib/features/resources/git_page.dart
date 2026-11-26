@@ -408,6 +408,10 @@ class _GitPageState extends State<GitPage> {
     final target = _target;
     final connected = target != null && target.host.connected;
     final entries = objects(_status['entries']);
+    final logEntries = _tab == 'history'
+        ? objects(_log['entries'])
+        : const <Map<String, dynamic>>[];
+    final historyNow = DateTime.now();
     final groups = groupChanges(entries);
     final sync = object(_branches['sync']);
     final branchSync = _branches.isEmpty
@@ -429,7 +433,7 @@ class _GitPageState extends State<GitPage> {
         ? 'resourceGitNotRepository'
         : _tab == 'changes' && entries.isEmpty
         ? 'noChanges'
-        : _tab == 'history' && objects(_log['entries']).isEmpty
+        : _tab == 'history' && logEntries.isEmpty
         ? 'resourceEmpty'
         : null;
     return PageFrame(
@@ -540,12 +544,12 @@ class _GitPageState extends State<GitPage> {
                     : null,
               ),
             if (_tab == 'history') ...[
-              for (final (index, entry) in objects(_log['entries']).indexed)
+              for (final (index, entry) in logEntries.indexed)
                 HistoryRow(
                   entry: entry,
                   branch: _status['branch'] as String?,
-                  now: DateTime.now(),
-                  divider: index < objects(_log['entries']).length - 1,
+                  now: historyNow,
+                  divider: index < logEntries.length - 1,
                   onTap: _busy ? null : () => _history(entry),
                 ),
               if (_log['next'] != null)

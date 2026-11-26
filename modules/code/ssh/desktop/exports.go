@@ -40,6 +40,7 @@ func (p *window) register(resources view.Resources) view.Registration {
 			{Name: "sailry", Exports: []view.Export{
 				call("focusTerminal", views.effect(views.focus)),
 				call("releaseTerminal", views.effect(views.releaseTerminal)),
+				call("releaseConversation", views.effectSsh(views.releaseConversation)),
 			}},
 			{Name: "sailry/sdk", Exports: []view.Export{
 				await("nextChange", p.nextChange),

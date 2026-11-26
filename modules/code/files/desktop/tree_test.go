@@ -315,3 +315,32 @@ func saveTreeShot(t *testing.T, tester *ui.Tester) {
 		}
 	}
 }
+
+func TestCollapseReleasesHiddenDirectoryState(t *testing.T) {
+	tree := fileTree{
+		ctx: t.Context(), folders: make(map[string]*bool), pages: make(map[string]*directoryPage),
+		host: native.FileDirectoryHost{Read: func(context.Context, string, *protocol.DirectoryCursor, func(*ui.Context, protocol.Directory, error)) {
+			t.Fatal("a collapsed directory was read")
+		}},
+	}
+	for _, folder := range []string{"", "docs", "docs/closed", "docs/open", "other"} {
+		open := folder == "" || folder == "docs" || folder == "docs/open"
+		*tree.folder(folder) = open
+		tree.recordExpansion(folder, open)
+		if open {
+			tree.pages[folder] = &directoryPage{}
+		}
+	}
+	*tree.folder("docs") = false
+	tree.recordExpansion("docs", false)
+	if tree.folders["docs/closed"] != nil || tree.pages["docs/open"] != nil || tree.pages["docs"] != nil ||
+		tree.folders["other"] == nil || !*tree.folders["docs/open"] || tree.pages[""] == nil {
+		t.Fatal("collapsing docs failed to release only its pages and implicit descendant state")
+	}
+	*tree.folder("") = false
+	tree.recordExpansion("", false)
+	if len(tree.pages) != 0 || tree.folders["docs"] != nil || tree.folders["other"] != nil ||
+		tree.ensurePage("") != nil || *tree.folder("") || !*tree.folders["docs/open"] {
+		t.Fatal("collapsing the root left hidden state or forgot an explicitly open descendant")
+	}
+}

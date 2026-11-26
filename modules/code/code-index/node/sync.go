@@ -199,16 +199,35 @@ func (s *scan) publish(previous map[string]verified) map[string]verified {
 
 // changed moves exactly invalidated files to the front of the cursor.
 func (s *scan) changed(paths map[string]uint64) {
-	for _, path := range slices.Backward(slices.Sorted(maps.Keys(paths))) {
+	if len(paths) == 0 {
+		return
+	}
+	sorted := slices.Sorted(maps.Keys(paths))
+	var promoted []string
+	var promotedSet map[string]struct{}
+	for _, path := range sorted {
 		generation := paths[path]
 		if known, ok := s.versions[path]; ok && known == generation || !s.seen[path] || !Candidate(path) {
 			continue
 		}
+		if promotedSet == nil {
+			promotedSet = make(map[string]struct{}, len(sorted))
+		}
 		// New paths must pass the next ignore-aware walk before entering this cursor.
-		s.pending = slices.DeleteFunc(s.pending, func(pending string) bool { return pending == path })
-		s.pending = slices.Insert(s.pending, 0, path)
+		promoted = append(promoted, path)
+		promotedSet[path] = struct{}{}
 		s.versions[path] = generation
 	}
+	if len(promoted) == 0 {
+		return
+	}
+	kept := make([]string, 0, len(s.pending))
+	for _, path := range s.pending {
+		if _, moved := promotedSet[path]; !moved {
+			kept = append(kept, path)
+		}
+	}
+	s.pending = append(promoted, kept...)
 }
 
 // inspected is one file's refresh: a new parse, nothing when the record is

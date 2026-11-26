@@ -436,6 +436,10 @@ func (s *Service) RemoveWorktree(ctx context.Context, root, expectedHead, expect
 		return fault(protocol.ErrorCodeOutcomeUnknown, "worktree removal may be partial")
 	}
 	s.Invalidate(main)
+	s.Invalidate(root)
+	s.mu.Lock()
+	delete(s.journal, root)
+	s.mu.Unlock()
 	return nil
 }
 func (s *Service) PruneWorktree(ctx context.Context, root, path string) error {

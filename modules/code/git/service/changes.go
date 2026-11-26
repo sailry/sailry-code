@@ -358,8 +358,12 @@ func (s *Service) rememberChanges(value *changeCapture) {
 			entries = append(entries, entry)
 		}
 	}
-	for len(entries) >= 8 {
-		entries = entries[1:]
+	clear(s.changes[len(entries):])
+	if len(entries) >= 8 {
+		drop := len(entries) - 7
+		copy(entries, entries[drop:])
+		clear(entries[len(entries)-drop:])
+		entries = entries[:len(entries)-drop]
 	}
 	s.changes = append(entries, value)
 }

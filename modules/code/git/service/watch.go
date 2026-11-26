@@ -90,9 +90,15 @@ func (m *watchMatcher) match(parts []string, isDir bool) (bool, error) {
 		m.baseLoaded = true
 	}
 	patterns := m.base[:len(m.base):len(m.base)]
+	var matcher gitignore.Matcher
+	builtLen := -1
 	for depth := 1; depth < len(parts); depth++ {
+		if matcher == nil || len(patterns) != builtLen {
+			matcher = gitignore.NewMatcher(patterns)
+			builtLen = len(patterns)
+		}
 		domain := parts[:depth]
-		if gitignore.NewMatcher(patterns).Match(domain, true) {
+		if matcher.Match(domain, true) {
 			// Git does not read rules inside an excluded directory.
 			return true, nil
 		}
@@ -109,7 +115,10 @@ func (m *watchMatcher) match(parts []string, isDir bool) (bool, error) {
 			return false, err
 		}
 	}
-	m.parent, m.cached = parent, gitignore.NewMatcher(patterns)
+	if matcher == nil || len(patterns) != builtLen {
+		matcher = gitignore.NewMatcher(patterns)
+	}
+	m.parent, m.cached = parent, matcher
 	return m.cached.Match(parts, isDir), nil
 }
 

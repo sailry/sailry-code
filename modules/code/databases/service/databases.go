@@ -200,6 +200,19 @@ func (set *rows) retain() bool {
 }
 
 func (set *rows) push(row []protocol.DatabaseValue) error {
+	lowerBound := 0
+	for _, cell := range row {
+		switch value := cell.Data.(type) {
+		case string:
+			lowerBound += len(value)
+		case protocol.Bytes:
+			lowerBound += len(value)
+		}
+		if set.bytes+lowerBound > maxResultBytes {
+			set.result.Truncated = true
+			return nil
+		}
+	}
 	encoded, err := json.Marshal(row)
 	if err != nil {
 		return queryError(err)

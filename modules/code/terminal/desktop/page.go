@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/egoist/mygo/ui"
 	kit "github.com/sailry/sailry-harness/sdk/desktop/controls"
@@ -184,17 +185,25 @@ func shellTitle(c *ui.Context, s settings.Shell) string {
 	return filepath.Base(s.Path)
 }
 
+var cachedMonoFonts = sync.OnceValue(func() []string {
+	var mono []string
+	for _, family := range ui.FontFamilies() {
+		if family.Monospaced {
+			mono = append(mono, family.Name)
+		}
+	}
+	return mono
+})
+
 // fontOptions are the terminal's fonts: the default, then the system's
 // monospaced families, and a saved family the system does not list, so
 // that the choice still shows.
 func fontOptions(c *ui.Context, saved string) []kit.SelectOption {
 	options := []kit.SelectOption{{Value: "", Label: i18n.T(c, "settings_font_default")}}
 	listed := saved == ""
-	for _, family := range ui.FontFamilies() {
-		if family.Monospaced {
-			options = append(options, kit.SelectOption{Value: family.Name, Label: family.Name})
-			listed = listed || family.Name == saved
-		}
+	for _, name := range cachedMonoFonts() {
+		options = append(options, kit.SelectOption{Value: name, Label: name})
+		listed = listed || name == saved
 	}
 	if !listed {
 		options = append(options, kit.SelectOption{Value: saved, Label: saved})

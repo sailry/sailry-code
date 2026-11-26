@@ -44,6 +44,10 @@ type statusSlot struct {
 	observers int
 	cancel    context.CancelFunc
 }
+type blameSlot struct {
+	token chan struct{}
+	users int
+}
 type Service struct {
 	ctx      context.Context
 	run      Runner
@@ -52,7 +56,7 @@ type Service struct {
 	statuses map[string]*statusSlot
 	journal  map[string]string
 	fetches  map[string]*fetchSlot
-	blames   map[string]chan struct{}
+	blames   map[string]*blameSlot
 	changes  []*changeCapture
 	idle     time.Duration // silence limit of a network operation
 	stats    time.Duration // line statistics share of a status
@@ -64,7 +68,7 @@ func New(options Options) *Service {
 }
 
 func newService(ctx context.Context, options Options) *Service {
-	s := &Service{ctx: ctx, run: options.Run, now: options.Now, statuses: map[string]*statusSlot{}, journal: map[string]string{}, fetches: map[string]*fetchSlot{}, blames: map[string]chan struct{}{}, idle: networkIdle, stats: statBudget}
+	s := &Service{ctx: ctx, run: options.Run, now: options.Now, statuses: map[string]*statusSlot{}, journal: map[string]string{}, fetches: map[string]*fetchSlot{}, blames: map[string]*blameSlot{}, idle: networkIdle, stats: statBudget}
 	if s.now == nil {
 		s.now = time.Now
 	}

@@ -39,6 +39,9 @@ func (p *repository) readGitLog(cursor *protocol.GitLogCursor, reset bool) {
 // would cut the lines that cross into it. A commit a later page repeats,
 // as when the repository gained one between the reads, is listed once.
 func (p *repository) projectGitHistory(loading bool) {
+	if !loading {
+		p.view.historyCache = gitHistoryCache{}
+	}
 	state := GitHistoryState{Loading: loading}
 	if len(p.gitLogPages) > 0 {
 		state.Next = p.gitLogPages[len(p.gitLogPages)-1].Next != nil

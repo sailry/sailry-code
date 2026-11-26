@@ -232,8 +232,18 @@ func (t *fileTree) recordExpansion(path string, open bool) {
 	if old, seen := t.expansions[path]; !seen || old != open {
 		t.expansions[path] = open
 		t.dirty = true
-		if !open && path != "" {
+		if seen && !open {
 			t.removePages(path)
+			// Live folders default to closed. Hidden descendants with that state
+			// can be recreated when the parent opens again.
+			if t.host.Read != nil {
+				for folder, expanded := range t.folders {
+					if folder != path && (path == "" || within(folder, path)) && !*expanded {
+						delete(t.folders, folder)
+						delete(t.expansions, folder)
+					}
+				}
+			}
 		}
 	}
 }

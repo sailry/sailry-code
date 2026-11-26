@@ -146,6 +146,9 @@ func (t *fileTree) ensurePage(name string) *directoryPage {
 	if t.ctx == nil || t.ctx.Err() != nil {
 		return nil
 	}
+	if expanded := t.folders[name]; expanded != nil && !*expanded {
+		return nil
+	}
 	if state := t.pages[name]; state != nil {
 		return state
 	}

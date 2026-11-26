@@ -152,6 +152,9 @@ func (p *repository) release() {
 	p.gitLogPages = nil
 	p.Data.Repo.Commits = nil
 	p.view.log = GitHistoryState{}
+	p.view.historyCache = gitHistoryCache{}
+	clear(p.view.expanded)
+	clear(p.view.diffOpen)
 	p.view.chord, p.view.second = false, false
 	p.view.picker, p.view.confirm = picker{}, confirm{}
 	clear(p.readReported)

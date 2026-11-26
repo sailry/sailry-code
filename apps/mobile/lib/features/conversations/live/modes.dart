@@ -108,6 +108,10 @@ class ConversationModes extends ChangeNotifier {
   List<ConversationMode> _modes = [];
   String? _inventory;
   int _generation = 0;
+  int _modesVersion = 0;
+  int _cachedModesVersion = -1;
+  String? _cachedProjectKey;
+  Map<String, dynamic>? _cachedProjection;
   bool _disposed = false;
   bool ready = false;
   Object? error;
@@ -137,6 +141,7 @@ class ConversationModes extends ChangeNotifier {
         if (_cache[text(summary['name'])] case final cached?)
           if (cached.$1 == _identity(summary)) ...cached.$2,
     ];
+    _modesVersion++;
     ready = false;
     error = null;
     notifyListeners();
@@ -191,13 +196,28 @@ class ConversationModes extends ChangeNotifier {
       }
     }
     _modes = packages.nonNulls.expand((modes) => modes).toList();
+    _modesVersion++;
     error = failures.firstOrNull;
     ready = error == null;
     notifyListeners();
   }
 
+  Map<String, dynamic> _projected(Map<String, dynamic> config) {
+    final key = jsonEncode(config);
+    if (_cachedProjection != null &&
+        _cachedModesVersion == _modesVersion &&
+        _cachedProjectKey == key) {
+      return _cachedProjection!;
+    }
+    final next = _project(config, _modes);
+    _cachedModesVersion = _modesVersion;
+    _cachedProjectKey = key;
+    _cachedProjection = next;
+    return next;
+  }
+
   List<ConversationMode> choices(Map<String, dynamic> config) {
-    final keys = _project(config, _modes)['choices'] as List;
+    final keys = _projected(config)['choices'] as List;
     return [
       for (final key in keys) _modes.firstWhere((mode) => mode.key == key),
     ];
@@ -216,7 +236,7 @@ class ConversationModes extends ChangeNotifier {
   }
 
   String? selected(Map<String, dynamic> config) => canSelect(config)
-      ? _project(config, _modes)['selected'] as String?
+      ? _projected(config)['selected'] as String?
       : text(config['mode'], 'code');
 
   Map<String, dynamic>? select(Map<String, dynamic> config, String key) =>
@@ -225,6 +245,7 @@ class ConversationModes extends ChangeNotifier {
   Future<void> reload() {
     if (!ready && error == null) return settled;
     _inventory = null;
+    _cachedProjection = null;
     _changed();
     return settled;
   }
@@ -233,6 +254,7 @@ class ConversationModes extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _generation++;
+    _cachedProjection = null;
     host.removeListener(_changed);
     super.dispose();
   }

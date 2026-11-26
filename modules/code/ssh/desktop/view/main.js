@@ -1,5 +1,5 @@
 import {View} from 'gpui-kit';
-import {context,header_action,focusTerminal,releaseTerminal} from 'sailry';
+import {context,header_action,focusTerminal,releaseTerminal,releaseConversation} from 'sailry';
 import {nextChange,readProjectCatalog,prepareRequest,completeRequest,forgetRequest,faultCode} from 'sailry/sdk';
 import {listSsh,newSshId,prepareSsh,listSshTerminals,prepareSshTerminal} from 'sailry/connections';
 import {createText,readText,releaseText,setText,focusText,nextTextEvent} from 'sailry/forms';
@@ -100,7 +100,17 @@ export default class Ssh extends View {
     const {profiles,selected,terminals}=state,catalog=await readProjectCatalog();
     if(revision!==this.refreshRevision)return;this.moduleMissing=false;this.projects=catalog.projects;this.worktrees=catalog.worktrees;
     if(this.transfer?.worktree&&!this.worktrees.some(tree=>tree.project&&tree.id===this.transfer.worktree))this.transfer.worktree=null;
-    this.profiles=profiles;this.selected=selected;this.terminals=[...terminals.values()];this.loaded=true;for(const id of this.closingTerminals)if(!terminals.has(id))this.closingTerminals.delete(id);if(!this.terminals.some(info=>info.id===this.terminal))this.terminal=this.terminals[Math.min(Math.max(terminalIndex,0),this.terminals.length-1)]?.id??null;if(this.terminal)this.selectTerminal(this.terminal,cx);this.focusSuccessor(cx);this.endExited(cx);
+    for(const {id} of known)if(!terminals.has(id)&&!this.closingTerminals.has(id))releaseTerminal(id);
+    const profileIds=new Set(profiles.map(profile=>profile.id));
+    const openProfiles=new Set([...terminals.values()].map(info=>info.ssh));
+    for(const [id,browser] of this.browsers){
+      if(profileIds.has(id)&&openProfiles.has(id))continue;
+      browser.close();this.browsers.delete(id);releaseConversation(id);
+    }
+    this.profiles=profiles;this.selected=selected;this.terminals=[...terminals.values()];this.loaded=true;
+    for(const id of this.ended)if(!terminals.has(id))this.ended.delete(id);
+    for(const id of this.dismissed)if(!terminals.has(id))this.dismissed.delete(id);
+    for(const id of this.closingTerminals)if(!terminals.has(id))this.closingTerminals.delete(id);if(!this.terminals.some(info=>info.id===this.terminal))this.terminal=this.terminals[Math.min(Math.max(terminalIndex,0),this.terminals.length-1)]?.id??null;if(this.terminal)this.selectTerminal(this.terminal,cx);this.focusSuccessor(cx);this.endExited(cx);
   }
   // Any exit closes the tab once; exit 0 is silent.
   endExited(cx){for(const info of this.terminals){const kind=info.status.kind;if((kind!=='exited'&&kind!=='failed')||this.ended.has(info.id))continue;this.ended.add(info.id);
@@ -110,7 +120,7 @@ export default class Ssh extends View {
   closeEnded(cx){if(this.locked()||this.outcome?.kind==='host_key_required')return;const info=this.terminals.find(info=>this.ended.has(info.id)&&!this.dismissed.has(info.id)&&!this.closingTerminals.has(info.id));if(!info)return;this.dismissed.add(info.id);this.run(cx=>this.closeTerminal(info.id,cx),cx);}
   async readTerminal(previous){const id=prepareRequest(command('inspect_terminal',{terminal:previous.id}));try{const result=await completeRequest(id);if(result.Ok?.kind==='terminal_snapshot')return result.Ok.data.info;if(result.Err?.code==='not_found')return null;return previous;}catch(error){return faultCode(error.message??String(error))==='not_found'?null:previous;}finally{forgetRequest(id);}}
   async execute(value,cx,after=null,id=null,target=this.profile(),prepared=null){
-    if(this.locked())return null;const request=prepared??new Request(value,id);this.pending={request,after,target};this.outcome=this.commandOpen&&this.outcome?.kind==='completed'?this.outcome:null;this.error=null;this.target=target?{id:target.id,revision:target.revision}:null;
+    if(this.locked()){if(id)forgetRequest(id);return null;}const request=prepared??new Request(value,id);this.pending={request,after,target};this.outcome=this.commandOpen&&this.outcome?.kind==='completed'?this.outcome:null;this.error=null;this.target=target?{id:target.id,revision:target.revision}:null;
     await request.start(cx);if(request.unknown)this.report(request.uncertainty??{code:'outcome_unknown'});return this.finish(cx);
   }
   async finish(cx){const pending=this.pending;if(!pending?.request.done)return null;this.pending=null;const{request,after,target}=pending;request.release();if(request.settled)await request.settled(cx);if(request.error){this.report(request.error);return null;}const output=request.output;
@@ -135,7 +145,7 @@ export default class Ssh extends View {
     this.home=true;this.picker=false;++this.terminalSelection;this.terminalClose=null;
     await this.execute(command('open_ssh_terminal',{profile:profile.id,expected_revision:profile.revision}),cx,null,prepareSshTerminal(profile.id,profile.revision),profile);
   }
-  selectTerminal(id,cx,focus=false){const info=this.terminals.find(info=>info.id===id);if(!info)return;if(focus)this.home=false;this.terminal=id;if(!this.commandOpen)this.selected=info.ssh;const profile=this.profiles.find(profile=>profile.id===info.ssh);if(profile){let files=this.browsers.get(profile.id);if(!files||JSON.stringify(files.profile)!==JSON.stringify(profile)){files?.close();files=new Files(profile,(error,key)=>this.report(error,key),this.text);this.browsers.set(profile.id,files);this.run(cx=>files.load('.',cx),cx);}}else{this.browsers.get(info.ssh)?.close();this.browsers.delete(info.ssh);}if(focus){++this.terminalSelection;this.terminalClose=null;focusTerminal(id);}cx.notify();}
+  selectTerminal(id,cx,focus=false){const info=this.terminals.find(info=>info.id===id);if(!info)return;if(focus)this.home=false;this.terminal=id;if(!this.commandOpen)this.selected=info.ssh;const profile=this.profiles.find(profile=>profile.id===info.ssh);if(profile){let files=this.browsers.get(profile.id);if(!files||JSON.stringify(files.profile)!==JSON.stringify(profile)){files?.close();files=new Files(profile,(error,key)=>this.report(error,key),this.text);this.browsers.set(profile.id,files);this.run(cx=>files.load('.',cx),cx);}}if(focus){++this.terminalSelection;this.terminalClose=null;focusTerminal(id);}cx.notify();}
   // A newer observation can supersede the command's refresh before it prunes the closed tab.
   focusSuccessor(cx){const close=this.terminalClose;if(!close)return;if(close.selection!==this.terminalSelection){this.terminalClose=null;return;}if(this.terminals.some(info=>info.id===close.id))return;this.terminalClose=null;if(this.terminal)this.selectTerminal(this.terminal,cx,true);}
   async closeTerminal(id,cx){
