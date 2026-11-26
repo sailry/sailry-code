@@ -11,20 +11,20 @@ import (
 )
 
 // agentToolScript is a fake model whose calls for each request come from the
-// running subtest. It records the offered tools, the context and every result.
+// running subtest. It records the offered tools, the system prompt and every result.
 type agentToolScript struct {
 	fantasy.LanguageModel
-	mu      sync.Mutex
-	offered [][]string
-	prompts []string
-	results map[string]string
-	plan    func(step int, results map[string]string) [][3]string
+	mu            sync.Mutex
+	offered       [][]string
+	systemPrompts []string
+	results       map[string]string
+	plan          func(step int, results map[string]string) [][3]string
 }
 
 func (script *agentToolScript) reset(plan func(int, map[string]string) [][3]string) {
 	script.mu.Lock()
 	defer script.mu.Unlock()
-	script.offered, script.prompts, script.results, script.plan = nil, nil, map[string]string{}, plan
+	script.offered, script.systemPrompts, script.results, script.plan = nil, nil, map[string]string{}, plan
 }
 
 func (script *agentToolScript) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
@@ -33,7 +33,7 @@ func (script *agentToolScript) Stream(_ context.Context, call fantasy.Call) (fan
 	var prompt strings.Builder
 	for _, message := range call.Prompt {
 		for _, part := range message.Content {
-			if text, found := fantasy.AsMessagePart[fantasy.TextPart](part); found {
+			if text, found := fantasy.AsMessagePart[fantasy.TextPart](part); found && message.Role == fantasy.MessageRoleSystem {
 				prompt.WriteString(text.Text + "\n")
 			}
 			if result, found := fantasy.AsMessagePart[fantasy.ToolResultPart](part); found {
@@ -43,7 +43,7 @@ func (script *agentToolScript) Stream(_ context.Context, call fantasy.Call) (fan
 			}
 		}
 	}
-	script.prompts = append(script.prompts, prompt.String())
+	script.systemPrompts = append(script.systemPrompts, prompt.String())
 	calls := script.plan(len(script.offered), script.results)
 	script.mu.Unlock()
 	return func(yield func(fantasy.StreamPart) bool) {

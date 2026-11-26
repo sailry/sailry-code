@@ -1,10 +1,15 @@
 package codehost_test
 
 import (
+	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sailry/sailry-code/internal/assembly/codehost"
+	nodetest "github.com/sailry/sailry-code/internal/testsupport/node"
 	"github.com/sailry/sailry-harness/sdk/native/node"
+	"github.com/sailry/sailry-harness/sdk/sdktest/protocol"
 )
 
 func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
@@ -67,5 +72,29 @@ func TestAssemblyOwnsDevelopmentModules(t *testing.T) {
 		if !seen[module.ID()] {
 			t.Errorf("Code assembly omitted Harness module %q", module.ID())
 		}
+	}
+}
+
+func TestCodeSystemPromptReachesModel(t *testing.T) {
+	assembly := codehost.Assembly()
+	productPrompt := strings.TrimSpace(assembly.SystemPrompt)
+	if !strings.Contains(productPrompt, "Sailry Code") {
+		t.Fatal("Code assembly is missing its product prompt")
+	}
+	script := &agentToolScript{}
+	script.reset(func(int, map[string]string) [][3]string { return nil })
+	owner := nodetest.Start(t, filepath.Join(t.TempDir(), "profile"), script, node.Options{Assembly: assembly})
+	t.Cleanup(func() {
+		if err := owner.Stop(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	config := nodetest.SessionConfig(t, owner, 200000, protocol.PermissionAsk)
+	session := nodetest.Do[protocol.Session](t, owner, protocol.Command{Kind: "create_session", Data: protocol.CommandCreateSessionPayload{Config: &config}})
+	nodetest.Turn(t, owner, session, "Explain a binary search.", nodetest.Wait, nil)
+	script.mu.Lock()
+	defer script.mu.Unlock()
+	if len(script.systemPrompts) != 1 || strings.Count(script.systemPrompts[0], productPrompt) != 1 {
+		t.Fatal("expected the product prompt once in the model's system message")
 	}
 }
