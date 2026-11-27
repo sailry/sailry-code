@@ -17,6 +17,7 @@ import 'package:sailry_mobile/ui/package_assets.dart';
 
 void main() {
   test('Code keeps its root routes and project resources in order', () {
+    expect(codeAssembly.displayName, 'Sailry Code');
     expect(codeAssembly.defaultRoute, chatRoute);
     expect(codeAssembly.pages.map((page) => page.id), [
       chatRoute,

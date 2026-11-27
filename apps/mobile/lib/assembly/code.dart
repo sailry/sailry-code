@@ -14,6 +14,7 @@ const codeReleaseRepository = 'sailry/sailry-code';
 const codeMobileTagPrefix = 'mobile-v';
 
 final codeAssembly = MobileAssembly(
+  displayName: 'Sailry Code',
   pages: harnessPages,
   defaultRoute: chatRoute,
   resources: const [

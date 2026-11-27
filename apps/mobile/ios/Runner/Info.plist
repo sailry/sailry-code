@@ -12,7 +12,7 @@
 			<string>en</string>
 		</array>
 		<key>CFBundleDisplayName</key>
-		<string>Sailry</string>
+		<string>Sailry Code</string>
 		<key>CFBundleExecutable</key>
 		<string>$(EXECUTABLE_NAME)</string>
 		<key>CFBundleIdentifier</key>

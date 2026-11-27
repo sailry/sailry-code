@@ -2,11 +2,14 @@
   "name": "Sailry",
   "slug": "sailry",
   "identifier": "ai.sailry.desktop",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "copyright": "Copyright © 2026 Sailry",
   "icon": "../../assets/branding/sailry-windows.png",
   "main": ".",
   "out": "../../.runtime/package/out",
+  "windows": {
+    "displayName": "Sailry Code"
+  },
   "macos": {
     "icon": "../../assets/branding/Sailry.icns",
     "minimumSystemVersion": "13.0",
@@ -15,6 +18,7 @@
       "python/bin/python3.12": "macos/python.entitlements.plist"
     },
     "infoPlist": {
+      "CFBundleDisplayName": "Sailry Code",
       "NSAppTransportSecurity": {
         "NSAllowsArbitraryLoadsInWebContent": true
       },
