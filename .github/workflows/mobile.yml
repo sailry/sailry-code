@@ -16,6 +16,33 @@ on:
         description: Sign and upload only when all seven mobile signing secrets and platform settings are available
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      release_version:
+        description: Marketing version validated by the Code release workflow
+        type: string
+        required: true
+      release_build:
+        description: Mobile build number validated by the Code release workflow
+        type: string
+        required: true
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: true
+      ANDROID_STORE_PASSWORD:
+        required: true
+      ANDROID_KEY_ALIAS:
+        required: true
+      ANDROID_KEY_PASSWORD:
+        required: true
+      IOS_CERTIFICATE_P12:
+        required: true
+      IOS_CERTIFICATE_PASSWORD:
+        required: true
+      IOS_PROVISIONING_PROFILE:
+        required: true
+      APPLE_API_PRIVATE_KEY:
+        required: true
 
 permissions:
   contents: read
@@ -43,24 +70,33 @@ jobs:
       - name: Select builds and credential-gated uploads
         id: policy
         env:
-          PLATFORM: ${{ inputs.platform }}
+          PLATFORM: ${{ inputs.platform || 'both' }}
           PACKAGES: ${{ inputs.packages }}
-          UPLOAD: ${{ inputs.upload }}
-          ANDROID_KEYSTORE_BASE64: ${{ inputs.upload && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
-          ANDROID_STORE_PASSWORD: ${{ inputs.upload && secrets.ANDROID_STORE_PASSWORD || '' }}
-          ANDROID_KEY_ALIAS: ${{ inputs.upload && secrets.ANDROID_KEY_ALIAS || '' }}
-          ANDROID_KEY_PASSWORD: ${{ inputs.upload && secrets.ANDROID_KEY_PASSWORD || '' }}
-          IOS_CERTIFICATE_P12: ${{ inputs.upload && secrets.IOS_CERTIFICATE_P12 || '' }}
-          IOS_CERTIFICATE_PASSWORD: ${{ inputs.upload && secrets.IOS_CERTIFICATE_PASSWORD || '' }}
-          IOS_PROVISIONING_PROFILE: ${{ inputs.upload && secrets.IOS_PROVISIONING_PROFILE || '' }}
+          UPLOAD: ${{ inputs.upload || inputs.release_version != '' }}
+          ANDROID_KEYSTORE_BASE64: ${{ (inputs.upload || inputs.release_version != '') && secrets.ANDROID_KEYSTORE_BASE64 || '' }}
+          ANDROID_STORE_PASSWORD: ${{ (inputs.upload || inputs.release_version != '') && secrets.ANDROID_STORE_PASSWORD || '' }}
+          ANDROID_KEY_ALIAS: ${{ (inputs.upload || inputs.release_version != '') && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_KEY_PASSWORD: ${{ (inputs.upload || inputs.release_version != '') && secrets.ANDROID_KEY_PASSWORD || '' }}
+          IOS_CERTIFICATE_P12: ${{ (inputs.upload || inputs.release_version != '') && secrets.IOS_CERTIFICATE_P12 || '' }}
+          IOS_CERTIFICATE_PASSWORD: ${{ (inputs.upload || inputs.release_version != '') && secrets.IOS_CERTIFICATE_PASSWORD || '' }}
+          IOS_PROVISIONING_PROFILE: ${{ (inputs.upload || inputs.release_version != '') && secrets.IOS_PROVISIONING_PROFILE || '' }}
           ANDROID_SIGNING_SHA256: ${{ vars.ANDROID_SIGNING_SHA256 }}
-          APPLE_API_PRIVATE_KEY: ${{ inputs.upload && secrets.APPLE_API_PRIVATE_KEY || '' }}
+          APPLE_API_PRIVATE_KEY: ${{ (inputs.upload || inputs.release_version != '') && secrets.APPLE_API_PRIVATE_KEY || '' }}
           APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
         run: bash .github/scripts/mobile-policy.sh
+      - name: Require both mobile distribution uploads for a Code release
+        if: inputs.release_version != ''
+        env:
+          ANDROID_UPLOAD: ${{ steps.policy.outputs.android_upload }}
+          IOS_UPLOAD: ${{ steps.policy.outputs.ios_upload }}
+        run: |
+          test "$ANDROID_UPLOAD" = true && test "$IOS_UPLOAD" = true ||
+            { echo 'The Code release requires signing credentials and distribution settings for both mobile platforms' >&2; exit 1; }
 
   checks:
+    needs: policy
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
@@ -110,20 +146,31 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ needs.policy.outputs.android_upload == 'true' && secrets.ANDROID_KEY_ALIAS || '' }}
           ANDROID_KEY_PASSWORD: ${{ needs.policy.outputs.android_upload == 'true' && secrets.ANDROID_KEY_PASSWORD || '' }}
         run: flutter build apk --release --no-pub --target-platform android-arm64
-      - name: Verify distribution signer
+      - name: Verify and stage Android distribution APK
         if: needs.policy.outputs.android_upload == 'true'
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_BUILD: ${{ inputs.release_build }}
         run: |
           set -euo pipefail
           apk=apps/mobile/build/app/outputs/flutter-apk/app-release.apk
-          signer=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          tools=$ANDROID_HOME/build-tools/36.0.0
+          signer=$("$tools/apksigner" verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
           expected=$(printf '%s' "$ANDROID_SIGNING_SHA256" | tr -d ': ' | tr 'A-F' 'a-f')
           test -n "$signer" && test "$signer" = "$expected" || { echo 'The APK does not use the distribution signer' >&2; exit 1; }
+          if test -n "$RELEASE_VERSION"; then
+            badging=$("$tools/aapt2" dump badging "$apk")
+            grep -Fq "package: name='com.sailry.sailry_mobile' versionCode='$RELEASE_BUILD' versionName='$RELEASE_VERSION'" <<< "$badging" &&
+              grep -Eq "^native-code: 'arm64-v8a'[[:space:]]*$" <<< "$badging" ||
+              { echo 'The APK does not match the expected Code ARM64 release' >&2; exit 1; }
+          fi
+          cp "$apk" "$RUNNER_TEMP/Sailry-android-arm64.apk"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: upload
         if: needs.policy.outputs.android_upload == 'true'
         with:
           name: code-mobile-android
-          path: apps/mobile/build/app/outputs/flutter-apk/app-release.apk
+          path: ${{ runner.temp }}/Sailry-android-arm64.apk
           if-no-files-found: error
           compression-level: 0
       - name: Remove Android signing files
@@ -150,9 +197,16 @@ jobs:
       - uses: ./.github/actions/mobile
       - name: Configure iOS
         working-directory: apps/mobile
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           printf 'SIGNING=%s/code-mobile-ios\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-          flutter build ios --release --config-only --no-pub
+          set --
+          # iOS marketing versions cannot include a GitHub prerelease suffix.
+          if [[ $RELEASE_VERSION == *-* ]]; then
+            set -- --build-name "${RELEASE_VERSION%%-*}"
+          fi
+          flutter build ios --release --config-only --no-pub "$@"
       - name: iOS distribution signing
         if: needs.policy.outputs.ios_upload == 'true'
         env:
@@ -217,11 +271,29 @@ jobs:
           else
             (cd apps/mobile && flutter build ios --release --no-pub --no-codesign)
           fi
+      - name: Verify and stage App Store Connect IPA
+        if: needs.policy.outputs.ios_upload == 'true'
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_BUILD: ${{ inputs.release_build }}
+        run: |
+          set -euo pipefail
+          set -- apps/mobile/build/ios/ipa/*.ipa
+          test "$#" = 1 && test -f "$1" || { echo 'Expected exactly one exported IPA' >&2; exit 1; }
+          if test -n "$RELEASE_VERSION"; then
+            info=$SIGNING/package-info.plist
+            unzip -p "$1" Payload/Runner.app/Info.plist > "$info"
+            test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info")" = com.sailry.sailryMobile &&
+              test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$info")" = "${RELEASE_VERSION%%-*}" &&
+              test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info")" = "$RELEASE_BUILD" ||
+              { echo 'The IPA does not match the expected Code iOS release' >&2; exit 1; }
+          fi
+          cp "$1" "$RUNNER_TEMP/Sailry-ios.ipa"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: needs.policy.outputs.ios_upload == 'true'
         with:
           name: code-mobile-ios
-          path: apps/mobile/build/ios/ipa/*.ipa
+          path: ${{ runner.temp }}/Sailry-ios.ipa
           if-no-files-found: error
           compression-level: 0
       - name: Upload iOS to TestFlight
@@ -238,12 +310,11 @@ jobs:
           mkdir -p "$API_PRIVATE_KEYS_DIR"
           printf '%s' "$APPLE_API_PRIVATE_KEY" > "$API_PRIVATE_KEYS_DIR/AuthKey_$APPLE_API_KEY_ID.p8"
           unset APPLE_API_PRIVATE_KEY
-          set -- apps/mobile/build/ios/ipa/*.ipa
-          test "$#" = 1 && test -f "$1"
+          ipa=$RUNNER_TEMP/Sailry-ios.ipa
           if xcrun altool --help 2>&1 | grep -q -- '--upload-package'; then
-            xcrun altool --upload-package "$1" --wait --api-key "$APPLE_API_KEY_ID" --api-issuer "$APPLE_API_ISSUER_ID"
+            xcrun altool --upload-package "$ipa" --wait --api-key "$APPLE_API_KEY_ID" --api-issuer "$APPLE_API_ISSUER_ID"
           else
-            xcrun altool --upload-app -f "$1" -t ios --apiKey "$APPLE_API_KEY_ID" --apiIssuer "$APPLE_API_ISSUER_ID"
+            xcrun altool --upload-app -f "$ipa" -t ios --apiKey "$APPLE_API_KEY_ID" --apiIssuer "$APPLE_API_ISSUER_ID"
           fi
       - name: Remove iOS signing files
         if: always() && needs.policy.outputs.ios_upload == 'true'

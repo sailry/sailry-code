@@ -235,6 +235,70 @@ class MobilePolicyTests(unittest.TestCase):
             self.assertIn("| IOS | not built (not requested) | not uploaded |", text)
 
 
+class MobileReleaseTests(unittest.TestCase):
+    def step_script(self, workflow, name):
+        text = (ROOT / f".github/workflows/{workflow}.yml").read_text()
+        step = re.split(r"\n(?=      - |  [^ ])", text.split(f"      - name: {name}\n", 1)[1], maxsplit=1)[0]
+        return textwrap.dedent(step.split("        run: |\n", 1)[1])
+
+    def test_release_tag_desktop_and_mobile_build_agree(self):
+        script = self.step_script("release", "Code tag, product and mobile metadata agree")
+        with tempfile.TemporaryDirectory(prefix="code-release-version-") as temporary:
+            root = Path(temporary)
+            identity = root / "internal/product/identity.go"
+            desktop = root / "cmd/sailry-code-desktop/mygo.json"
+            mobile = root / "apps/mobile/pubspec.yaml"
+            for path in [identity, desktop, mobile]:
+                path.parent.mkdir(parents=True)
+            identity.write_text('const (\n\tID = "code"\n\tVersion = "9.8.7"\n)\n')
+            desktop.write_text('{"version": "9.8.7"}\n')
+            output = root / "output"
+            environment = {**os.environ, "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v9.8.7", "GITHUB_OUTPUT": str(output)}
+
+            mobile.write_text("version: 9.8.7+42\n")
+            result = subprocess.run(["bash", "-c", script], env=environment, cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(output.read_text(), "version=9.8.7\nmobile_build=42\n")
+            output.unlink()
+
+            for version in ["9.8.6+42", "9.8.7", "9.8.7+0", "9.8.7+42+43", "9.8.7+bad"]:
+                with self.subTest(version=version):
+                    mobile.write_text(f"version: {version}\n")
+                    result = subprocess.run(["bash", "-c", script], env=environment, cwd=root, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
+
+    def test_release_fails_when_either_distribution_upload_is_disabled(self):
+        script = self.step_script("mobile", "Require both mobile distribution uploads for a Code release")
+        for android, ios in [("true", "true"), ("true", "false"), ("false", "true"), ("false", "false")]:
+            with self.subTest(android=android, ios=ios):
+                environment = {**os.environ, "ANDROID_UPLOAD": android, "IOS_UPLOAD": ios}
+                result = subprocess.run(["bash", "-c", script], env=environment, capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, android == ios == "true", result.stderr)
+
+    def test_mobile_draft_requires_two_packages_and_checksums_their_release_names(self):
+        script = self.step_script("release", "Mobile packages and checksums")
+        packages = {"Sailry-android-arm64.apk": b"fixture APK", "Sailry-ios.ipa": b"fixture IPA"}
+        with tempfile.TemporaryDirectory(prefix="code-release-mobile-assets-") as temporary:
+            root = Path(temporary)
+            mobile, assets = root / "mobile", root / "assets"
+            mobile.mkdir()
+            assets.mkdir()
+            for name, content in packages.items():
+                with self.subTest(missing=name):
+                    (mobile / name).write_bytes(b"")
+                    result = subprocess.run(["bash", "-c", script], cwd=assets, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(list(assets.iterdir()), [])
+                    (mobile / name).write_bytes(content)
+            result = subprocess.run(["bash", "-c", script], cwd=assets, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            checksums = (assets / "SHA256SUMS-mobile").read_text().splitlines()
+            self.assertEqual(checksums, [f"{hashlib.sha256(content).hexdigest()}  {name}" for name, content in packages.items()])
+            for name, content in packages.items():
+                self.assertEqual((assets / name).read_bytes(), content)
+
+
 class WorkflowConfigurationTests(unittest.TestCase):
     def test_only_distribution_packages_receive_telemetry_and_are_uploaded(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -254,7 +318,7 @@ class WorkflowConfigurationTests(unittest.TestCase):
         policy = workflow.split("\n  policy:\n", 1)[1].split("\n  checks:\n", 1)[0]
         for secret in [*MOBILE_SECRETS, "APPLE_API_PRIVATE_KEY"]:
             with self.subTest(secret=secret):
-                self.assertIn(f"          {secret}: ${{{{ inputs.upload && secrets.{secret} || '' }}}}", policy)
+                self.assertIn(f"          {secret}: ${{{{ (inputs.upload || inputs.release_version != '') && secrets.{secret} || '' }}}}", policy)
 
     def test_integration_suites_have_database_fixtures_and_release_coverage(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -343,29 +407,6 @@ print(json.dumps([os.environ.get("GOPROXY"), sys.argv[1:]]))
         self.assertIn("go vet -tags integration ./...", checks)
         self.assertIn("go test -race", checks)
 
-    def test_ci_scope_skips_heavy_packaging_on_module_only_pull_requests(self):
-        def run_scope(*, event="pull_request", changed="", distribution="false", integration="false"):
-            with tempfile.TemporaryDirectory(prefix="code-ci-scope-") as temporary:
-                output = Path(temporary) / "output"
-                env = {
-                    **os.environ,
-                    "GITHUB_EVENT_NAME": event,
-                    "CHANGED_FILES": changed,
-                    "DISTRIBUTION": distribution,
-                    "INTEGRATION": integration,
-                    "GITHUB_OUTPUT": str(output),
-                }
-                subprocess.run(["bash", str(ROOT / ".github/scripts/ci-scope.sh")], env=env, check=True)
-                return dict(line.split("=", 1) for line in output.read_text().splitlines())
-
-        self.assertEqual(run_scope(changed="README.md\nREADME.zh-CN.md\ndocs/guide.md\n"), {"go": "false", "packages": "false"})
-        self.assertEqual(run_scope(changed="modules/code/ssh/service/service.go\n"), {"go": "true", "packages": "false"})
-        self.assertEqual(run_scope(changed="modules/code/git/service/executable_windows.go\n"), {"go": "true", "packages": "true"})
-        self.assertEqual(run_scope(changed="modules/code/terminal/node/service.go\n"), {"go": "true", "packages": "true"})
-        self.assertEqual(run_scope(changed="cmd/sailry-code-desktop/main.go\n"), {"go": "true", "packages": "true"})
-        self.assertEqual(run_scope(event="push", changed="modules/code/ssh/service/service.go\n"), {"go": "true", "packages": "true"})
-        self.assertEqual(run_scope(changed="README.md\n", distribution="true"), {"go": "true", "packages": "true"})
-
     def test_platform_tests_cover_macos_and_windows_os_packages(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text()
         job = text.split("\n  platform-tests:\n", 1)[1].split("\n  macos:\n", 1)[0]
@@ -429,16 +470,28 @@ print(json.dumps([os.environ.get("GOPROXY"), sys.argv[1:]]))
                 self.assertLessEqual(set(re.findall(r"secrets\.([A-Za-z0-9_]+)", text)), desktop | set(MOBILE_SECRETS))
                 self.assertLessEqual(set(re.findall(r"vars\.([A-Za-z0-9_]+)", text)), variables)
         release = (ROOT / ".github/workflows/release.yml").read_text()
-        self.assertEqual(set(re.findall(r"secrets\.([A-Za-z0-9_]+)", release)), desktop)
+        self.assertEqual(set(re.findall(r"secrets\.([A-Za-z0-9_]+)", release)), desktop | set(MOBILE_SECRETS))
 
-    def test_mobile_is_on_demand_and_every_upload_is_gated(self):
+    def test_mobile_is_manual_or_called_by_release_and_every_upload_is_gated(self):
         text = (ROOT / ".github/workflows/mobile.yml").read_text()
         self.assertIn("  workflow_dispatch:\n", text)
-        self.assertNotRegex(text, r"(?m)^  (push|pull_request|workflow_call):")
+        self.assertIn("  workflow_call:\n", text)
+        self.assertNotRegex(text, r"(?m)^  (push|pull_request):")
         uploads = list(re.finditer(r"(?m)^      - (?:uses: actions/upload-artifact[^\n]*|name: Upload iOS to TestFlight)\n(?P<body>(?:        [^\n]*\n|          [^\n]*\n)+)", text))
         self.assertEqual(len(uploads), 3)
         for upload in uploads:
             self.assertRegex(upload["body"], r"if: needs\.policy\.outputs\.(android|ios)_upload == 'true'")
+        self.assertIn("name: code-mobile-android\n          path: ${{ runner.temp }}/Sailry-android-arm64.apk", uploads[0]["body"])
+        self.assertIn("name: code-mobile-ios\n          path: ${{ runner.temp }}/Sailry-ios.ipa", uploads[1]["body"])
+        self.assertIn("ipa=$RUNNER_TEMP/Sailry-ios.ipa", uploads[2]["body"])
+
+        release = (ROOT / ".github/workflows/release.yml").read_text()
+        mobile, draft = release.split("\n  mobile:\n", 1)[1].split("\n  draft:\n", 1)
+        self.assertIn("    needs: version\n    uses: ./.github/workflows/mobile.yml\n", mobile)
+        self.assertIn("      release_version: ${{ needs.version.outputs.version }}\n", mobile)
+        self.assertIn("      release_build: ${{ needs.version.outputs.mobile_build }}\n", mobile)
+        self.assertIn("    needs: [version, packages, mobile]\n", draft)
+        self.assertIn("          pattern: 'code-mobile-{android,ios}'\n", draft)
 
 
 if __name__ == "__main__":

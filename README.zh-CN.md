@@ -30,7 +30,7 @@
 
 - **桌面端：** macOS 13+（Apple 芯片或 Intel）、Windows 10+（x64）。
 - **Host：** macOS 13+、Linux（glibc 2.34+）。见[安装与配对指南](https://sailry.dev/zh/docs/hosts/#install-and-pair)。
-- **移动端：** Android 7.0+、iOS 15+。见[移动端发布](https://github.com/sailry/sailry-code/releases?q=mobile-v&expanded=true)。
+- **移动端：** Android 7.0+（[从发布页下载 `Sailry-android-arm64.apk`](https://github.com/sailry/sailry-code/releases)）、iOS 15+（TestFlight）。
 
 [从源码构建](CONTRIBUTING.md) · [数据目录、更新与隐私](docs/profiles.md)
 

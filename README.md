@@ -30,7 +30,7 @@ Find Desktop and Host installers on [Sailry Code Releases](https://github.com/sa
 
 - **Desktop:** macOS 13+ (Apple silicon or Intel) and Windows 10+ (x64).
 - **Host:** macOS 13+ and Linux (glibc 2.34+). See [Install and pair a Host](https://sailry.dev/docs/hosts/#install-and-pair).
-- **Mobile:** Android 7.0+ and iOS 15+. See [Mobile releases](https://github.com/sailry/sailry-code/releases?q=mobile-v&expanded=true).
+- **Mobile:** Android 7.0+ ([download `Sailry-android-arm64.apk` from Releases](https://github.com/sailry/sailry-code/releases)) and iOS 15+ (TestFlight).
 
 [Build from source](CONTRIBUTING.md) · [Profiles, updates & privacy](docs/profiles.md)
 

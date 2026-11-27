@@ -25,7 +25,7 @@ Sailry Code depends one-way on `github.com/sailry/sailry-harness` through its pu
 
 | Component | Responsibility |
 | --- | --- |
-| `cmd/sailry-code-desktop` | Desktop binary (`mygo.json` v`0.3.2`, `ai.sailry.desktop`, macOS/Windows packaging scripts) |
+| `cmd/sailry-code-desktop` | Desktop binary (`mygo.json` v`0.3.3`, `ai.sailry.desktop`, macOS/Windows packaging scripts) |
 | `cmd/sailry-code-host` | Headless `sailry-host` binary and Host archive packaging wrapper |
 | `cmd/update-feed` | Ed25519 Desktop update catalog signer using `sdk/release.PublishDesktop` |
 | `cmd/package-env.sh` | Packaging environment (`SAILRY_PRODUCT=code`, release repository, `ProductVersion` ldflags) |
@@ -58,17 +58,18 @@ Each Code module registers directly with Harness host contracts in Go (no JS VM 
 
 ## Product identity, profiles, and legacy migration
 
-- **Identity (`internal/product/identity.go`)**: Sets `ID = "code"`, `Name = "Sailry Code"`, `Version = "0.3.2"`, and preserves installed package compatibility (`ai.sailry.desktop`, `sailry-desktop`, and `product.CodeHost()` keeping `sailry-host` / `~/.sailry-host` service layout while switching release feeds to `sailry/sailry-code`).
+- **Identity (`internal/product/identity.go`)**: Sets `ID = "code"`, `Name = "Sailry Code"`, `Version = "0.3.3"`, and preserves installed package compatibility (`ai.sailry.desktop`, `sailry-desktop`, and `product.CodeHost()` keeping `sailry-host` / `~/.sailry-host` service layout while switching release feeds to `sailry/sailry-code`).
 - **Profiles**: Default Desktop and foreground Host profile is `~/.sailry-code`; `just desktop dev` uses `~/.sailry-code-dev`; `just desktop <name>` uses `.runtime/profiles/<name>`.
 - **Crash-safe legacy adoption**: With `LegacyProfile = "~/.sailry"`, starting Desktop without `--data-dir` when `~/.sailry-code` is absent and `~/.sailry` is stopped runs Harness's journaled migration (`~/..sailry-code.legacy-profile/`), relocating stored profile paths, keeping database backups, and repairing linked Git worktree metadata.
 
 ## Mobile architecture (`apps/mobile`)
 
-- Package `sailry_code_mobile` (`0.3.1+33`) shares Harness's Go C ABI bridge (`sailry_bridge`) prepared by `apps/mobile/tool/prepare.sh` and `tool/build_native.sh`.
+- Package `sailry_code_mobile` (`0.3.3+34`) shares Harness's Go C ABI bridge (`sailry_bridge`) prepared by `apps/mobile/tool/prepare.sh` and `tool/build_native.sh`.
 - `lib/assembly/code.dart` mounts Harness's core pages (`chat`, `hosts`, `projects`, `settings`) alongside ordered project resources (`gitResource`, `filesResource`, `terminalResource`, `portsResource`), `DraftWorkspace` (worktree/branch selection), and `ModePicker` (`code`, `plan`, `flagship`).
-- Uses its own release feed (`sailry/sailry-code`, `mobile-v<SemVer>+<build>`) independent of Desktop and Host releases.
 
 ## Packaging, signing, and updates
 
 - `cmd/sailry-code-desktop/{macos,windows}/package.sh` and `cmd/sailry-code-host/package.sh` source `cmd/package-env.sh` and delegate directly to `$SAILRY_HARNESS_DIR` packaging and Host archive scripts.
-- `.github/workflows/release.yml` validates tag parity (`v<Version>` == `product.Version` == `mygo.json`), produces macOS ARM64/Intel DMGs & unsigned ZIPs, Windows x64 NSIS installer & portable ZIP, and macOS/Linux Host tarballs, then runs `./cmd/update-feed` to generate Ed25519-signed `*.zip.update.json` catalogs for all three Desktop targets (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`).
+- `.github/workflows/release.yml` checks that the `v<Version>` tag agrees with `product.Version`, `mygo.json`, and the `<Version>+<build>` in the Mobile pubspec. It builds Desktop and Host packages via `ci.yml` in parallel with signed Mobile packages via `mobile.yml`. It generates Ed25519-signed `*.zip.update.json` catalogs for all three Desktop targets (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`).
+- The same GitHub release draft includes `Sailry-android-arm64.apk`, `Sailry-ios.ipa` (App Store Connect export), and their `SHA256SUMS-mobile`. A release requires both mobile platforms' signing and upload settings, verifies the built packages against the expected version and build number, and collects artifacts from the same run. No separate mobile tag or build is required.
+- `mobile.yml` also supports manual runs for Flutter analysis, tests, and optional packaging or upload. Signed iOS runs upload the exported IPA to TestFlight; App Store Connect export-compliance declarations remain separate.

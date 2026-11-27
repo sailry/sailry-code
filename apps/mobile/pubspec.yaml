@@ -1,7 +1,7 @@
 name: sailry_code_mobile
 description: Sailry Code mobile controller
 publish_to: none
-version: 0.3.1+33
+version: 0.3.3+34
 
 environment:
   sdk: '>=3.12.0 <4.0.0'
@@ -13,12 +13,12 @@ dependencies:
   sailry_mobile:
     git:
       url: https://github.com/sailry/sailry-harness.git
-      ref: 43797b38de93368413955d6ed1d84db951ffbd28
+      ref: 6b1ba4d375c3ea75e7eb5eb383ca9fc7a85e39bc
       path: apps/mobile
   sailry_bridge:
     git:
       url: https://github.com/sailry/sailry-harness.git
-      ref: 43797b38de93368413955d6ed1d84db951ffbd28
+      ref: 6b1ba4d375c3ea75e7eb5eb383ca9fc7a85e39bc
       path: apps/mobile/packages/sailry_bridge
   shared_preferences: 2.5.5
 

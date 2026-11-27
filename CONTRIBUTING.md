@@ -151,9 +151,10 @@ exact same `sailry-harness` commit SHA; do not add `apps/mobile/pubspec_override
 - **`.github/workflows/ci.yml`** runs on pull requests, pushes to `main`, manual
   dispatch (with optional `integration: true`), and `workflow_call` from `release.yml`:
   - `scope` uses `.github/scripts/ci-scope.sh` to skip Go/package jobs when only
-    non-Go docs/licenses change.
-  - `checks` runs `test_workflows.py` / `test_bootstrap.py` / `test_mobile_native.py`,
-    Linux Bubblewrap setup, `gofmt`, cross-OS `go vet -tags integration ./...`,
+    non-Go docs/licenses change. A Desktop version change on `main` must pass
+    the tag-first promotion check below; it does not repeat the release matrix.
+  - `checks` runs the closed fixtures under `.github/scripts/test_*.py`, Linux
+    Bubblewrap setup, `gofmt`, cross-OS `go vet -tags integration ./...`,
     `go test ./...`, and `-race` tests across the 5 Code service/node packages.
   - `native` stages Turso, Capture, and Windows CRT (`SHA256SUMS`) for `linux-arm64`,
     `darwin-arm64`, `darwin-amd64`, and `windows-amd64`; `platform-tests` validates
@@ -163,27 +164,47 @@ exact same `sailry-harness` commit SHA; do not add `apps/mobile/pubspec_override
     NSIS installer + portable ZIP on Ubuntu; `host-linux` builds x64 and ARM64 Host tarballs.
   - Optional `integration` and `repository-integration` run live Postgres 17, MySQL 8.4,
     SSH, and multi-OS Git/worktree suites.
-- **`.github/workflows/mobile.yml`** runs **only via `workflow_dispatch`** (never on
-  PRs or `main`). It runs `flutter analyze` and `flutter test`. Package builds produce
+- **`.github/workflows/mobile.yml`** runs once as part of a tagged Code Release,
+  or independently via `workflow_dispatch` (never automatically on PRs or `main`).
+  It runs `flutter analyze` and `flutter test`. Manual package builds can produce
   an Android ARM64 APK or an unsigned iOS app. With uploads enabled, all seven
   signing secrets, and the selected platform’s distribution settings, Android
   publishes the signed APK as a GitHub Actions artifact. iOS exports a signed IPA
-  as an artifact and uploads it to TestFlight.
+  as an artifact and uploads it to App Store Connect. The tagged release requires
+  both signed packages in the same draft, not another mobile build or release run.
+  A successful upload alone does not establish TestFlight availability.
 
 ## Release packages
 
-Desktop/Host releases trigger automatically on `v*` tags via `.github/workflows/release.yml`:
+Desktop, Host and mobile releases are tag-first. `Code Release` (`.github/workflows/release.yml`)
+triggers automatically on `v*` tags and creates or fills a **draft** GitHub release.
 
-1. Keep `internal/product/identity.go` (`ID = "code"`, `Version`) and
-   `cmd/sailry-code-desktop/mygo.json` (`.version`) equal to the `v<Version>` tag.
-2. `ci.yml` (`distribution: true`) produces signed macOS DMGs/ZIPs, macOS/Linux Host
-   tarballs, and Windows x64 setup/portable ZIPs.
-3. `./cmd/update-feed` signs Ed25519 `update-v1` manifests (`*.zip.update.json`) for all
-   three Desktop targets (`aarch64-apple-darwin`, `x86_64-apple-darwin`,
-   `x86_64-pc-windows-msvc`) using `SAILRY_UPDATE_SIGNING_KEY`.
-4. `install-host.sh` is verified (`task_repository=https://github.com/sailry/sailry-code`),
-   checksums are generated, and assets are uploaded to a **draft** GitHub release
-   without modifying existing differing assets or published releases.
+1. Start with a clean worktree at the current remote `main`. Prepare the candidate
+   commit there without pushing it to `main`: set `internal/product/identity.go`
+   (`ID = "code"`, `Version`) and `cmd/sailry-code-desktop/mygo.json` (`.version`)
+   to match `vX.Y.Z`. Set `apps/mobile/pubspec.yaml` to `X.Y.Z+N` with a new
+   mobile build number. Tag that commit and push **only** the tag:
+   `git push --no-follow-tags origin refs/tags/vX.Y.Z`.
+2. Wait for the tag-triggered `Code Release` run to succeed. It calls `ci.yml` with
+   `distribution: true` once: checks, integration, Developer ID signing and
+   notarization, both macOS DMGs/ZIPs, macOS/Linux Host tarballs, and Windows x64
+   setup/portable ZIPs. `./cmd/update-feed` signs the Ed25519 `update-v1` manifests
+   (`*.zip.update.json`) for all three Desktop targets using `SAILRY_UPDATE_SIGNING_KEY`.
+   The workflow verifies `install-host.sh` (`task_repository=https://github.com/sailry/sailry-code`)
+   and checksums, then uploads draft assets without replacing differing or published assets.
+3. Fast-forward `main` to that exact tagged commit, e.g.
+   `git push --no-follow-tags origin 'refs/tags/vX.Y.Z^{commit}:refs/heads/main'`.
+   Do not squash, rebase, or add a merge commit after the run. If `main` has
+   diverged, stop; do not force the push or move the tag. Publishing the verified
+   draft is a separate action.
+
+On `main`, `scope` compares the Desktop version at GitHub's `before` SHA and the
+pushed tip. If it changed, only this gate runs: it requires the tag to resolve to
+that tip and the same repository's tag-push `release.yml` run (including `ci.yml`)
+to have completed successfully before the main push. An unverifiable range, tag,
+run, or ordering fails the gate. Pushing the version to `main` early fails even if
+Code Release succeeds before a rerun; manual CI or a manual release dispatch
+cannot replace the tag-push result.
 
 ### One-time Harness handoff
 

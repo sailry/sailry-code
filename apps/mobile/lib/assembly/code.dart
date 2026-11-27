@@ -11,7 +11,7 @@ import '../features/resources/files/contribution.dart';
 import '../features/resources/git/contribution.dart';
 
 const codeReleaseRepository = 'sailry/sailry-code';
-const codeMobileTagPrefix = 'mobile-v';
+const codeMobileTagPrefix = 'v';
 
 final codeAssembly = MobileAssembly(
   displayName: 'Sailry Code',

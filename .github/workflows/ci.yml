@@ -53,16 +53,15 @@ jobs:
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
-          fetch-depth: 2
+          # Main needs the exact pre-push commit and remote tags; PRs only need the merge parent.
+          fetch-depth: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '0' || '2' }}
           persist-credentials: false
-      - name: Changed inputs
+      - name: Verify release promotion or select CI lanes
         id: scope
         env:
           BEFORE: ${{ github.event.before }}
           DISTRIBUTION: ${{ inputs.distribution }}
           INTEGRATION: ${{ inputs.integration }}
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
         run: bash .github/scripts/ci-scope.sh
 
   native-linux:

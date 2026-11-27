@@ -21,24 +21,30 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      mobile_build: ${{ steps.version.outputs.mobile_build }}
     steps:
       - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
         with:
           persist-credentials: false
-      - name: Code tag and product metadata agree
+      - name: Code tag, product and mobile metadata agree
         id: version
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REF_TYPE" = tag
-          version=${GITHUB_REF_NAME#v}
-          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo 'The tag must be a release version' >&2; exit 1; }
+          [[ $GITHUB_REF_NAME =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]] ||
+            { echo 'The tag must be a release version (v<Version>)' >&2; exit 1; }
+          version=${BASH_REMATCH[1]}
           product=$(sed -nE 's/^[[:space:]]*(const[[:space:]]+)?Version[[:space:]]*=[[:space:]]*"([^"]*)".*$/\2/p' internal/product/*.go)
           id=$(sed -nE 's/^[[:space:]]*(const[[:space:]]+)?ID[[:space:]]*=[[:space:]]*"([^"]*)".*$/\2/p' internal/product/*.go)
           desktop=$(jq -er .version cmd/sailry-code-desktop/mygo.json)
           test "$id" = code && test "$product" = "$version" && test "$desktop" = "$version" ||
             { echo 'The Code tag, product identity and Desktop metadata differ' >&2; exit 1; }
-          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          mobile=$(sed -nE 's/^version:[[:space:]]*([^[:space:]]+)[[:space:]]*$/\1/p' apps/mobile/pubspec.yaml)
+          mobile_build=${mobile#*+}
+          test "${mobile%+*}" = "$version" && [[ $mobile_build =~ ^[1-9][0-9]*$ ]] ||
+            { echo 'The Mobile version must match the Code tag with a positive build number' >&2; exit 1; }
+          printf 'version=%s\nmobile_build=%s\n' "$version" "$mobile_build" >> "$GITHUB_OUTPUT"
 
   packages:
     needs: version
@@ -52,8 +58,24 @@ jobs:
       SAILRY_SENTRY_DSN: ${{ secrets.SAILRY_SENTRY_DSN }}
       SAILRY_TELEMETRY_KEY: ${{ secrets.SAILRY_TELEMETRY_KEY }}
 
+  mobile:
+    needs: version
+    uses: ./.github/workflows/mobile.yml
+    with:
+      release_version: ${{ needs.version.outputs.version }}
+      release_build: ${{ needs.version.outputs.mobile_build }}
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      IOS_CERTIFICATE_P12: ${{ secrets.IOS_CERTIFICATE_P12 }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+      APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+
   draft:
-    needs: [version, packages]
+    needs: [version, packages, mobile]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -74,6 +96,21 @@ jobs:
           pattern: 'code-{macos-*,windows,host-*}'
           path: ${{ runner.temp }}/assets
           merge-multiple: true
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: 'code-mobile-{android,ios}'
+          path: ${{ runner.temp }}/mobile
+          merge-multiple: true
+      - name: Mobile packages and checksums
+        working-directory: ${{ runner.temp }}/assets
+        run: |
+          set -euo pipefail
+          apk=Sailry-android-arm64.apk
+          ipa=Sailry-ios.ipa
+          test -s "../mobile/$apk" && test -s "../mobile/$ipa" ||
+            { echo 'The Code draft requires both signed mobile packages from this run' >&2; exit 1; }
+          mv "../mobile/$apk" "../mobile/$ipa" .
+          sha256sum "$apk" "$ipa" > SHA256SUMS-mobile
       - name: Code update feed
         working-directory: ${{ runner.temp }}/assets
         env:
@@ -105,6 +142,8 @@ jobs:
             SHA256SUMS-aarch64-unknown-linux-gnu SHA256SUMS-x86_64-unknown-linux-gnu
       - name: Gather a draft without replacing historical assets
         working-directory: ${{ runner.temp }}/assets
+        env:
+          MOBILE_BUILD: ${{ needs.version.outputs.mobile_build }}
         run: |
           set -euo pipefail
           tag=$GITHUB_REF_NAME
@@ -116,13 +155,25 @@ jobs:
           release=$(gh release view "$tag" --json databaseId,isDraft)
           test "$(jq -r .isDraft <<<"$release")" = true || { echo "$tag is already published; its assets stay unchanged" >&2; exit 1; }
           gh api --paginate "repos/$GH_REPO/releases/$(jq -r .databaseId <<<"$release")/assets" \
-            --jq '.[] | [.name, .state, (.digest // "")] | @tsv' > ../existing.tsv
+            --jq '.[] | [.name, .state, (.digest // ""), (.label // "")] | @tsv' > ../existing.tsv
+          # The mobile job verified the signed APK against this build number.
+          apk_label="Android build $MOBILE_BUILD"
           upload=()
           for file in *; do
             row=$(awk -F '\t' -v name="$file" '$1 == name' ../existing.tsv)
-            if test -z "$row"; then upload+=("$file"); continue; fi
+            if test -z "$row"; then
+              case "$file" in
+                Sailry-android-arm64.apk) upload+=("$file#$apk_label") ;;
+                *) upload+=("$file") ;;
+              esac
+              continue
+            fi
             sum=$(sha256sum "$file")
-            test "$row" = "$(printf '%s\tuploaded\tsha256:%s' "$file" "${sum%% *}")" ||
+            test "${row%$'\t'*}" = "$(printf '%s\tuploaded\tsha256:%s' "$file" "${sum%% *}")" ||
               { echo "$file already exists with other content" >&2; exit 1; }
+            if test "$file" = Sailry-android-arm64.apk; then
+              test "${row##*$'\t'}" = "$apk_label" ||
+                { echo "$file already exists with a different label (expected $apk_label)" >&2; exit 1; }
+            fi
           done
           if test ${#upload[@]} -gt 0; then gh release upload "$tag" "${upload[@]}"; fi
