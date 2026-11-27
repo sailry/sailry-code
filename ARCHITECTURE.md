@@ -25,7 +25,7 @@ Sailry Code depends one-way on `github.com/sailry/sailry-harness` through its pu
 
 | Component | Responsibility |
 | --- | --- |
-| `cmd/sailry-code-desktop` | Desktop binary (`mygo.json` v`0.3.1`, `ai.sailry.desktop`, macOS/Windows packaging scripts) |
+| `cmd/sailry-code-desktop` | Desktop binary (`mygo.json` v`0.3.2`, `ai.sailry.desktop`, macOS/Windows packaging scripts) |
 | `cmd/sailry-code-host` | Headless `sailry-host` binary and Host archive packaging wrapper |
 | `cmd/update-feed` | Ed25519 Desktop update catalog signer using `sdk/release.PublishDesktop` |
 | `cmd/package-env.sh` | Packaging environment (`SAILRY_PRODUCT=code`, release repository, `ProductVersion` ldflags) |
@@ -58,7 +58,7 @@ Each Code module registers directly with Harness host contracts in Go (no JS VM 
 
 ## Product identity, profiles, and legacy migration
 
-- **Identity (`internal/product/identity.go`)**: Sets `ID = "code"`, `Name = "Sailry Code"`, `Version = "0.3.1"`, and preserves installed package compatibility (`ai.sailry.desktop`, `sailry-desktop`, and `product.CodeHost()` keeping `sailry-host` / `~/.sailry-host` service layout while switching release feeds to `sailry/sailry-code`).
+- **Identity (`internal/product/identity.go`)**: Sets `ID = "code"`, `Name = "Sailry Code"`, `Version = "0.3.2"`, and preserves installed package compatibility (`ai.sailry.desktop`, `sailry-desktop`, and `product.CodeHost()` keeping `sailry-host` / `~/.sailry-host` service layout while switching release feeds to `sailry/sailry-code`).
 - **Profiles**: Default Desktop and foreground Host profile is `~/.sailry-code`; `just desktop dev` uses `~/.sailry-code-dev`; `just desktop <name>` uses `.runtime/profiles/<name>`.
 - **Crash-safe legacy adoption**: With `LegacyProfile = "~/.sailry"`, starting Desktop without `--data-dir` when `~/.sailry-code` is absent and `~/.sailry` is stopped runs Harness's journaled migration (`~/..sailry-code.legacy-profile/`), relocating stored profile paths, keeping database backups, and repairing linked Git worktree metadata.
 

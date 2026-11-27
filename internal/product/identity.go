@@ -9,7 +9,7 @@ import (
 
 const (
 	ID         = "code"
-	Version    = "0.3.1"
+	Version    = "0.3.2"
 	repository = "sailry/sailry-code"
 )
 
